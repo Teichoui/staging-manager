@@ -325,6 +325,8 @@ let errorsData = {};
 let currentTab = 'staging';
 let tabLoaded = {};
 let csrfToken = null;
+const SECRET_MASK = '__STAGING_MANAGER_SECRET_SET__';
+const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key']);
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -615,7 +617,16 @@ async function loadSettings() {
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   fields.forEach(f=>{
     const el=document.getElementById(f);
-    if(el&&cfg[f]!==undefined) el.value=Array.isArray(cfg[f]) ? cfg[f].join('\n') : cfg[f];
+    if(el&&cfg[f]!==undefined) {
+      if (SECRET_FIELDS.has(f) && cfg[f] === SECRET_MASK) {
+        el.value = '';
+        el.dataset.keepSecret = '1';
+        el.placeholder = 'Saved - leave blank to keep';
+      } else {
+        el.value=Array.isArray(cfg[f]) ? cfg[f].join('\n') : cfg[f];
+        delete el.dataset.keepSecret;
+      }
+    }
   });
   document.getElementById('verify_tls').checked=!!cfg.verify_tls;
   document.getElementById('s_username').value=cfg.username||'';
@@ -630,7 +641,12 @@ async function saveSettings() {
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   const data={};
-  fields.forEach(f=>{ const el=document.getElementById(f); if(el) data[f]=el.value; });
+  fields.forEach(f=>{
+    const el=document.getElementById(f);
+    if(!el) return;
+    if (SECRET_FIELDS.has(f) && el.dataset.keepSecret === '1' && !el.value) data[f]=SECRET_MASK;
+    else data[f]=el.value;
+  });
   data.verify_tls=document.getElementById('verify_tls').checked;
   data.username=document.getElementById('s_username').value;
   const pw=document.getElementById('new_password').value;

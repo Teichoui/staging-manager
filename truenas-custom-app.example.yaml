@@ -6,8 +6,16 @@ services:
       - "7474:7474"
     environment:
       STAGING_MANAGER_CONFIG_DIR: /config
+      STAGING_MANAGER_HOST: "0.0.0.0"
       STAGING_MANAGER_PORT: "7474"
       STAGING_MANAGER_HTTPS: "false"
+      # Set this yourself, or read the generated one from /config/setup.token on first run.
+      # STAGING_MANAGER_SETUP_TOKEN: "change-me-before-first-run"
+      STAGING_MANAGER_CONTAINER_STAGING_ROOT: "/media/staging"
+      STAGING_MANAGER_TRUENAS_MEDIA_ROOT: "/mnt/tank/Media"
+      STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT: "/downloads/Done3"
+      STAGING_MANAGER_ALLOWED_HOSTS: "host.docker.internal,localhost,127.0.0.1,::1,truenas"
+      STAGING_MANAGER_RCLONE_BIN: "/usr/bin/rclone"
       RCLONE_CONFIG: /config/rclone/rclone.conf
     volumes:
       - /mnt/tank/apps/staging-manager:/config

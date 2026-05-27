@@ -2,12 +2,14 @@ __pycache__/
 *.py[cod]
 .Python
 .venv/
+.test_vendor/
 venv/
 env/
 
 # Runtime config/secrets when running locally
 config/
 secret.key
+setup.token
 cert.pem
 key.pem
 app.log

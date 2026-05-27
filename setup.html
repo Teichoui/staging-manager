@@ -35,6 +35,11 @@
     <input type="text" id="username" autocomplete="username" placeholder="admin" />
   </div>
   <div class="field">
+    <label>Setup Token</label>
+    <input type="password" id="setup_token" autocomplete="off" />
+    <div class="hint">Set `STAGING_MANAGER_SETUP_TOKEN` or read `/config/setup.token` from the container.</div>
+  </div>
+  <div class="field">
     <label>Password</label>
     <input type="password" id="password" autocomplete="new-password" />
     <div class="hint">Minimum 8 characters</div>
@@ -54,15 +59,17 @@
     const err = document.getElementById('error');
     const suc = document.getElementById('success');
     const username = document.getElementById('username').value.trim();
+    const setup_token = document.getElementById('setup_token').value;
     const password = document.getElementById('password').value;
     const confirm  = document.getElementById('confirm').value;
     err.style.display = 'none';
     if (!username) { err.textContent='Username required'; err.style.display='block'; return; }
+    if (!setup_token) { err.textContent='Setup token required'; err.style.display='block'; return; }
     if (password.length < 8) { err.textContent='Password must be 8+ characters'; err.style.display='block'; return; }
     if (password !== confirm) { err.textContent='Passwords do not match'; err.style.display='block'; return; }
     btn.disabled = true; btn.textContent = 'Creating...';
     try {
-      const res = await fetch('/api/setup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password}) });
+      const res = await fetch('/api/setup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, setup_token, password}) });
       const data = await res.json();
       if (data.success) { suc.style.display='block'; setTimeout(()=>window.location.href='/login', 1500); }
       else { err.textContent = data.error || 'Setup failed'; err.style.display='block'; btn.disabled=false; btn.textContent='Create Account & Continue'; }
