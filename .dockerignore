@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.git/
+.venv/
+config.json
+secret.key
+cert.pem
+key.pem

@@ -1,0 +1,17 @@
+services:
+  staging-manager:
+    image: YOUR_DOCKERHUB_USER/staging-manager:latest
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+    environment:
+      STAGING_MANAGER_CONFIG_DIR: /config
+      STAGING_MANAGER_PORT: "7474"
+      STAGING_MANAGER_HTTPS: "false"
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+    volumes:
+      - /mnt/tank/apps/staging-manager:/config
+      - /mnt/tank/Media:/media
+      - /mnt/tank/apps/rclone:/config/rclone:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Media Manager — Setup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@700;800&display=swap');
+  :root { --bg:#0a0a0f; --surface:#111118; --border:#1e1e2e; --accent:#7c6af7; --danger:#f76a6a; --success:#6af7a2; --text:#e0e0f0; --muted:#555570; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',monospace; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:2rem; }
+  .box { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:2.5rem; width:100%; max-width:440px; }
+  .logo { font-family:'Syne',sans-serif; font-size:1.8rem; font-weight:800; color:var(--accent); margin-bottom:.25rem; }
+  .sub { color:var(--muted); font-size:.75rem; margin-bottom:.5rem; }
+  .step-label { color:var(--accent); font-size:.7rem; text-transform:uppercase; letter-spacing:.1em; margin-bottom:1.5rem; }
+  .field { margin-bottom:1rem; }
+  label { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:.4rem; }
+  input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:.65rem .9rem; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:.85rem; outline:none; transition:border-color .15s; }
+  input:focus { border-color:var(--accent); }
+  .hint { font-size:.68rem; color:var(--muted); margin-top:.3rem; }
+  .btn { width:100%; margin-top:1.5rem; padding:.75rem; background:var(--accent); color:#fff; border:none; border-radius:6px; font-family:'Syne',sans-serif; font-size:.95rem; font-weight:700; cursor:pointer; transition:opacity .15s; }
+  .btn:hover { opacity:.85; }
+  .btn:disabled { opacity:.4; cursor:not-allowed; }
+  .error { margin-top:1rem; color:var(--danger); font-size:.78rem; text-align:center; display:none; }
+  .success { margin-top:1rem; color:var(--success); font-size:.78rem; text-align:center; display:none; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo">⚡ MEDIA MANAGER</div>
+  <div class="sub">First time setup</div>
+  <div class="step-label">Create admin account</div>
+  <div class="field">
+    <label>Username</label>
+    <input type="text" id="username" autocomplete="username" placeholder="admin" />
+  </div>
+  <div class="field">
+    <label>Password</label>
+    <input type="password" id="password" autocomplete="new-password" />
+    <div class="hint">Minimum 8 characters</div>
+  </div>
+  <div class="field">
+    <label>Confirm Password</label>
+    <input type="password" id="confirm" autocomplete="new-password" />
+  </div>
+  <button class="btn" onclick="doSetup()">Create Account & Continue</button>
+  <div class="error" id="error"></div>
+  <div class="success" id="success">Account created! Redirecting...</div>
+</div>
+<script>
+  document.addEventListener('keydown', e => { if(e.key==='Enter') doSetup(); });
+  async function doSetup() {
+    const btn = document.querySelector('.btn');
+    const err = document.getElementById('error');
+    const suc = document.getElementById('success');
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const confirm  = document.getElementById('confirm').value;
+    err.style.display = 'none';
+    if (!username) { err.textContent='Username required'; err.style.display='block'; return; }
+    if (password.length < 8) { err.textContent='Password must be 8+ characters'; err.style.display='block'; return; }
+    if (password !== confirm) { err.textContent='Passwords do not match'; err.style.display='block'; return; }
+    btn.disabled = true; btn.textContent = 'Creating...';
+    try {
+      const res = await fetch('/api/setup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password}) });
+      const data = await res.json();
+      if (data.success) { suc.style.display='block'; setTimeout(()=>window.location.href='/login', 1500); }
+      else { err.textContent = data.error || 'Setup failed'; err.style.display='block'; btn.disabled=false; btn.textContent='Create Account & Continue'; }
+    } catch(e) { err.textContent='Connection error'; err.style.display='block'; btn.disabled=false; btn.textContent='Create Account & Continue'; }
+  }
+</script>
+</body>
+</html>

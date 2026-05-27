@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+env/
+
+# Runtime config/secrets when running locally
+config/
+secret.key
+cert.pem
+key.pem
+app.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

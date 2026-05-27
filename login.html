@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Media Manager — Login</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@700;800&display=swap');
+  :root { --bg:#0a0a0f; --surface:#111118; --border:#1e1e2e; --accent:#7c6af7; --danger:#f76a6a; --text:#e0e0f0; --muted:#555570; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',monospace; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+  .box { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:2.5rem; width:100%; max-width:380px; }
+  .logo { font-family:'Syne',sans-serif; font-size:1.8rem; font-weight:800; color:var(--accent); margin-bottom:.25rem; }
+  .sub { color:var(--muted); font-size:.75rem; margin-bottom:2rem; }
+  .field { margin-bottom:1rem; }
+  label { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:.4rem; }
+  input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:.65rem .9rem; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:.85rem; outline:none; transition:border-color .15s; }
+  input:focus { border-color:var(--accent); }
+  .btn { width:100%; margin-top:1.5rem; padding:.75rem; background:var(--accent); color:#fff; border:none; border-radius:6px; font-family:'Syne',sans-serif; font-size:.95rem; font-weight:700; cursor:pointer; transition:opacity .15s; }
+  .btn:hover { opacity:.85; }
+  .btn:disabled { opacity:.4; cursor:not-allowed; }
+  .error { margin-top:1rem; color:var(--danger); font-size:.78rem; text-align:center; display:none; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo">⚡ MEDIA MANAGER</div>
+  <div class="sub">Sign in to continue</div>
+  <div class="field"><label>Username</label><input type="text" id="username" autocomplete="username" /></div>
+  <div class="field"><label>Password</label><input type="password" id="password" autocomplete="current-password" /></div>
+  <button class="btn" onclick="doLogin()">Sign In</button>
+  <div class="error" id="error"></div>
+</div>
+<script>
+  document.addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+  async function doLogin() {
+    const btn = document.querySelector('.btn');
+    const err = document.getElementById('error');
+    const u = document.getElementById('username').value.trim();
+    const p = document.getElementById('password').value;
+    if (!u||!p) return;
+    btn.disabled=true; btn.textContent='Signing in...'; err.style.display='none';
+    try {
+      const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u,password:p}) });
+      const data = await res.json();
+      if (data.success) { window.location.href='/'; }
+      else { err.textContent=data.error||'Invalid credentials'; err.style.display='block'; btn.disabled=false; btn.textContent='Sign In'; }
+    } catch(e) { err.textContent='Connection error'; err.style.display='block'; btn.disabled=false; btn.textContent='Sign In'; }
+  }
+</script>
+</body>
+</html>

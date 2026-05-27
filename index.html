@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Media Manager</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;700;800&display=swap');
+:root {
+  --bg:#0a0a0f; --surface:#111118; --surface2:#16161f; --border:#1e1e2e;
+  --accent:#7c6af7; --accent2:#f7a26a; --danger:#f76a6a; --success:#6af7a2;
+  --warn:#f7d96a; --text:#e0e0f0; --muted:#555570;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',monospace; min-height:100vh; display:flex; flex-direction:column; }
+
+/* Nav */
+nav { background:var(--surface); border-bottom:1px solid var(--border); padding:.75rem 2rem; display:flex; align-items:center; gap:1rem; flex-shrink:0; }
+.nav-logo { font-family:'Syne',sans-serif; font-size:1.3rem; font-weight:800; color:var(--accent); margin-right:1rem; }
+.nav-tab { padding:.4rem .9rem; border-radius:5px; border:1px solid transparent; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:.78rem; color:var(--muted); background:none; transition:all .15s; }
+.nav-tab:hover { color:var(--text); }
+.nav-tab.active { border-color:var(--border); background:var(--surface2); color:var(--accent); }
+.nav-right { margin-left:auto; display:flex; gap:.5rem; }
+.nav-btn { padding:.35rem .8rem; border:1px solid var(--border); background:none; color:var(--muted); border-radius:4px; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:.72rem; transition:all .15s; }
+.nav-btn:hover { color:var(--text); border-color:#2e2e4e; }
+.nav-btn.danger:hover { color:var(--danger); border-color:rgba(247,106,106,.3); }
+
+/* Layout */
+main { flex:1; padding:2rem; overflow-y:auto; }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+
+/* Stats bar */
+.stats { display:flex; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap; }
+.stat { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:.75rem 1.25rem; flex:1; min-width:120px; }
+.stat-label { font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; margin-bottom:.2rem; }
+.stat-value { font-size:1.6rem; font-weight:700; }
+.stat-value.warn { color:var(--warn); }
+.stat-value.danger { color:var(--danger); }
+.stat-value.success { color:var(--success); }
+
+/* Filter bar */
+.filter-bar { display:flex; gap:.5rem; margin-bottom:1.25rem; flex-wrap:wrap; }
+.filter-btn { padding:.3rem .8rem; border-radius:4px; border:1px solid var(--border); background:none; color:var(--muted); cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:.72rem; transition:all .15s; }
+.filter-btn:hover { color:var(--text); }
+.filter-btn.active { border-color:var(--accent); color:var(--accent); background:rgba(124,106,247,.1); }
+
+/* Sections */
+.section { margin-bottom:2rem; }
+.section-header { display:flex; align-items:center; gap:.75rem; margin-bottom:.75rem; }
+.section-title { font-family:'Syne',sans-serif; font-size:1rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+.badge { font-size:.65rem; padding:.2rem .5rem; border-radius:3px; background:var(--border); color:var(--muted); }
+.badge.warn { background:rgba(247,106,106,.15); color:var(--danger); }
+.badge.ok { background:rgba(106,247,162,.1); color:var(--success); }
+
+/* Folder rows */
+.folders { display:flex; flex-direction:column; gap:.4rem; }
+.folder { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:.65rem 1rem; display:flex; align-items:center; gap:.75rem; transition:border-color .15s; }
+.folder:hover { border-color:#2e2e4e; }
+.folder.no-video { border-color:rgba(247,106,106,.3); background:rgba(247,106,106,.03); }
+.dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.dot.ok { background:var(--success); }
+.dot.missing { background:var(--danger); animation:pulse 2s infinite; }
+.folder-name { flex:1; font-size:.78rem; word-break:break-all; }
+.folder-meta { font-size:.68rem; color:var(--muted); flex-shrink:0; }
+.actions { display:flex; gap:.4rem; flex-shrink:0; }
+
+/* Buttons */
+.btn { padding:.28rem .7rem; border-radius:4px; border:none; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:.7rem; font-weight:600; transition:all .15s; }
+.btn:disabled { opacity:.4; cursor:not-allowed; }
+.btn-sync { background:rgba(124,106,247,.15); color:var(--accent); border:1px solid rgba(124,106,247,.3); }
+.btn-sync:hover:not(:disabled) { background:rgba(124,106,247,.3); }
+.btn-delete { background:rgba(247,106,106,.1); color:var(--danger); border:1px solid rgba(247,106,106,.2); }
+.btn-delete:hover:not(:disabled) { background:rgba(247,106,106,.25); }
+.btn-action { background:rgba(247,162,106,.1); color:var(--accent2); border:1px solid rgba(247,162,106,.2); }
+.btn-action:hover:not(:disabled) { background:rgba(247,162,106,.25); }
+.btn-primary { background:var(--accent); color:#fff; border:1px solid var(--accent); padding:.5rem 1.25rem; font-size:.8rem; }
+.btn-primary:hover:not(:disabled) { opacity:.85; }
+.btn-success { background:rgba(106,247,162,.15); color:var(--success); border:1px solid rgba(106,247,162,.3); padding:.5rem 1.25rem; font-size:.8rem; }
+
+/* Error cards */
+.error-cards { display:flex; flex-direction:column; gap:.75rem; }
+.error-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:1rem 1.25rem; }
+.error-card.permission { border-left:3px solid var(--danger); }
+.error-card.no_files { border-left:3px solid var(--warn); }
+.error-card.other { border-left:3px solid var(--muted); }
+.error-card.disk_space { border-left:3px solid var(--accent2); }
+.error-card-top { display:flex; align-items:center; gap:.75rem; }
+.error-type-badge { font-size:.65rem; padding:.2rem .5rem; border-radius:3px; text-transform:uppercase; letter-spacing:.05em; }
+.error-type-badge.permission { background:rgba(247,106,106,.15); color:var(--danger); }
+.error-type-badge.no_files { background:rgba(247,217,106,.15); color:var(--warn); }
+.error-type-badge.other { background:var(--border); color:var(--muted); }
+.error-type-badge.disk_space { background:rgba(247,162,106,.15); color:var(--accent2); }
+.error-label { flex:1; font-size:.82rem; }
+.error-count { font-size:.7rem; color:var(--muted); }
+.error-detail { font-size:.7rem; color:var(--muted); margin-top:.4rem; font-family:monospace; }
+.error-actions { margin-top:.75rem; display:flex; gap:.5rem; }
+
+/* Settings */
+.settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
+@media(max-width:700px) { .settings-grid { grid-template-columns:1fr; } }
+.settings-section { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:1.25rem; }
+.settings-section h3 { font-family:'Syne',sans-serif; font-size:.9rem; font-weight:700; margin-bottom:1rem; color:var(--accent); }
+.field { margin-bottom:.9rem; }
+.field label { display:block; font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:.35rem; }
+.field input, .field textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:.55rem .8rem; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:.8rem; outline:none; transition:border-color .15s; }
+.field textarea { min-height:5.5rem; resize:vertical; }
+.field input:focus, .field textarea:focus { border-color:var(--accent); }
+.field input.ok { border-color:rgba(106,247,162,.5); }
+.field input.err { border-color:rgba(247,106,106,.5); }
+.check-row { display:flex; align-items:center; gap:.5rem; color:var(--muted); font-size:.75rem; }
+.check-row input { width:auto; }
+.test-row { display:flex; gap:.5rem; align-items:flex-end; }
+.test-row .field { flex:1; margin-bottom:0; }
+.test-status { font-size:.7rem; padding:.3rem; }
+.test-status.ok { color:var(--success); }
+.test-status.err { color:var(--danger); }
+.save-bar { margin-top:1.5rem; display:flex; gap:.75rem; align-items:center; }
+.save-msg { font-size:.75rem; }
+.save-msg.ok { color:var(--success); }
+.save-msg.err { color:var(--danger); }
+
+/* Seedbox */
+.seedbox-folders { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:.5rem; }
+.sb-folder { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:.65rem 1rem; display:flex; align-items:center; gap:.75rem; cursor:default; transition:border-color .15s; }
+.sb-folder:hover { border-color:#2e2e4e; }
+.sb-folder-name { flex:1; font-size:.78rem; word-break:break-all; }
+
+/* Misc */
+.loading { color:var(--muted); font-size:.85rem; padding:2rem; text-align:center; }
+.empty { color:var(--muted); font-size:.8rem; padding:1rem; text-align:center; border:1px dashed var(--border); border-radius:6px; }
+.app-header { display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem; }
+.app-header h2 { font-family:'Syne',sans-serif; font-size:1.4rem; font-weight:800; }
+.toast-container { position:fixed; bottom:2rem; right:2rem; display:flex; flex-direction:column; gap:.5rem; z-index:1000; }
+.toast { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:.65rem 1rem; font-size:.76rem; max-width:380px; animation:slideIn .2s ease; word-break:break-word; }
+.toast.success { border-color:rgba(106,247,162,.4); color:var(--success); }
+.toast.error { border-color:rgba(247,106,106,.4); color:var(--danger); }
+.toast.info { border-color:rgba(124,106,247,.4); color:var(--accent); }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+@keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="nav-logo">⚡ MEDIA</span>
+  <button class="nav-tab active" onclick="switchTab('staging')">📦 Staging</button>
+  <button class="nav-tab" onclick="switchTab('seedbox')">🌐 Seedbox</button>
+  <button class="nav-tab" onclick="switchTab('errors')">⚠️ Errors</button>
+  <button class="nav-tab" onclick="switchTab('permissions')">🔒 Permissions</button>
+  <button class="nav-tab" onclick="switchTab('settings')">⚙️ Settings</button>
+  <div class="nav-right">
+    <button class="nav-btn" onclick="refreshCurrent()">↻ refresh</button>
+    <button class="nav-btn danger" onclick="doLogout()">⏻ logout</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ── STAGING ── -->
+<div id="tab-staging" class="tab-content active">
+  <div class="stats">
+    <div class="stat"><div class="stat-label">TV Folders</div><div class="stat-value" id="s-tv">—</div></div>
+    <div class="stat"><div class="stat-label">Movie Folders</div><div class="stat-value" id="s-mv">—</div></div>
+    <div class="stat"><div class="stat-label">Missing Video</div><div class="stat-value danger" id="s-miss">—</div></div>
+    <div class="stat"><div class="stat-label">Ready</div><div class="stat-value success" id="s-ready">—</div></div>
+  </div>
+  <div class="filter-bar">
+    <button class="filter-btn active" id="sf-all" onclick="setStagingFilter('all')">All</button>
+    <button class="filter-btn" id="sf-missing" onclick="setStagingFilter('missing')">Missing Video</button>
+    <button class="filter-btn" id="sf-tv" onclick="setStagingFilter('tv')">TV</button>
+    <button class="filter-btn" id="sf-movies" onclick="setStagingFilter('movies')">Movies</button>
+  </div>
+  <div id="staging-content"><div class="loading">Loading...</div></div>
+</div>
+
+<!-- ── SEEDBOX ── -->
+<div id="tab-seedbox" class="tab-content">
+  <div class="app-header">
+    <h2>Seedbox Browser</h2>
+    <div style="margin-left:auto;display:flex;gap:.5rem">
+      <button class="filter-btn active" id="sbf-tv" onclick="setSeedboxCat('tv')">TV</button>
+      <button class="filter-btn" id="sbf-movies" onclick="setSeedboxCat('movies')">Movies</button>
+    </div>
+  </div>
+  <div id="seedbox-content"><div class="loading">Loading seedbox...</div></div>
+</div>
+
+<!-- ── ERRORS ── -->
+<div id="tab-errors" class="tab-content">
+  <div class="app-header">
+    <h2>Error Log</h2>
+    <div style="margin-left:auto;display:flex;gap:.5rem">
+      <button class="filter-btn active" id="ef-all" onclick="setErrorFilter('all')">All</button>
+      <button class="filter-btn" id="ef-sonarr" onclick="setErrorFilter('sonarr')">Sonarr</button>
+      <button class="filter-btn" id="ef-radarr" onclick="setErrorFilter('radarr')">Radarr</button>
+    </div>
+  </div>
+  <div id="errors-content"><div class="loading">Loading errors...</div></div>
+</div>
+
+<!-- ── PERMISSIONS ── -->
+<div id="tab-permissions" class="tab-content">
+  <div class="app-header"><h2>Fix Permissions</h2></div>
+  <p style="color:var(--muted);font-size:.8rem;margin-bottom:1.5rem;max-width:600px">
+    Applies POSIX_OPEN ACL recursively via the TrueNAS API. Use this when Sonarr/Radarr report "Permission denied" errors. Requires TrueNAS API key in Settings.
+  </p>
+  <div class="settings-section" style="max-width:500px">
+    <h3>Apply Permissions</h3>
+    <div style="display:flex;flex-direction:column;gap:.75rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;">
+        <div>
+          <div style="font-size:.82rem">TV Library</div>
+          <div style="font-size:.68rem;color:var(--muted)" id="perm-tv-path">—</div>
+        </div>
+        <button class="btn btn-action" onclick="fixPerms('tv')">Fix TV</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;">
+        <div>
+          <div style="font-size:.82rem">Movies Library</div>
+          <div style="font-size:.68rem;color:var(--muted)" id="perm-movies-path">—</div>
+        </div>
+        <button class="btn btn-action" onclick="fixPerms('movies')">Fix Movies</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;">
+        <div>
+          <div style="font-size:.82rem">Staging</div>
+          <div style="font-size:.68rem;color:var(--muted)" id="perm-staging-path">—</div>
+        </div>
+        <button class="btn btn-action" onclick="fixPerms('staging')">Fix Staging</button>
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:.5rem" onclick="fixPerms('all')">⚡ Fix All Permissions</button>
+    </div>
+    <div id="perm-result" style="margin-top:1rem;font-size:.78rem;display:none"></div>
+  </div>
+</div>
+
+<!-- ── SETTINGS ── -->
+<div id="tab-settings" class="tab-content">
+  <div class="app-header"><h2>Settings</h2></div>
+  <div class="settings-grid">
+
+    <div class="settings-section">
+      <h3>Sonarr</h3>
+      <div class="test-row">
+        <div class="field"><label>URL</label><input type="text" id="sonarr_url" placeholder="http://host.docker.internal:30113" /></div>
+        <button class="btn btn-action" onclick="testConn('sonarr')">Test</button>
+        <span class="test-status" id="sonarr-status"></span>
+      </div>
+      <div class="field"><label>API Key</label><input type="password" id="sonarr_api_key" placeholder="••••••••" /></div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Radarr</h3>
+      <div class="test-row">
+        <div class="field"><label>URL</label><input type="text" id="radarr_url" placeholder="http://host.docker.internal:30025" /></div>
+        <button class="btn btn-action" onclick="testConn('radarr')">Test</button>
+        <span class="test-status" id="radarr-status"></span>
+      </div>
+      <div class="field"><label>API Key</label><input type="password" id="radarr_api_key" placeholder="••••••••" /></div>
+    </div>
+
+    <div class="settings-section">
+      <h3>TrueNAS</h3>
+      <div class="test-row">
+        <div class="field"><label>URL</label><input type="text" id="truenas_url" placeholder="http://host.docker.internal" /></div>
+        <button class="btn btn-action" onclick="testConn('truenas')">Test</button>
+        <span class="test-status" id="truenas-status"></span>
+      </div>
+      <div class="field"><label>API Key</label><input type="password" id="truenas_api_key" placeholder="••••••••" /></div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Seedbox / rclone</h3>
+      <div class="test-row">
+        <div class="field"><label>rclone Remote Name</label><input type="text" id="rclone_remote" placeholder="seedbox" /></div>
+        <button class="btn btn-action" onclick="testConn('rclone')">Test</button>
+        <span class="test-status" id="rclone-status"></span>
+      </div>
+      <div class="field"><label>TV Path on Seedbox</label><input type="text" id="seedbox_tv_path" placeholder="/downloads/Done3/tv-sonarr" /></div>
+      <div class="field"><label>Movies Path on Seedbox</label><input type="text" id="seedbox_movies_path" placeholder="/downloads/Done3/radarr" /></div>
+      <div class="field"><label>rclone Transfers</label><input type="number" id="rclone_transfers" min="1" max="32" /></div>
+      <div class="field"><label>rclone Excludes <span style="color:var(--muted)">(one per line)</span></label><textarea id="rclone_excludes" placeholder="**/*.rar&#10;**/*.r[0-9][0-9]"></textarea></div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Media Paths</h3>
+      <div class="field"><label>Container Staging TV</label><input type="text" id="staging_tv" placeholder="/media/staging/tv-sonarr" /></div>
+      <div class="field"><label>Container Staging Movies</label><input type="text" id="staging_movies" placeholder="/media/staging/radarr" /></div>
+      <div class="field"><label>TrueNAS TV Library</label><input type="text" id="tv_library" placeholder="/mnt/tank/Media/TV" /></div>
+      <div class="field"><label>TrueNAS Movies Library</label><input type="text" id="movies_library" placeholder="/mnt/tank/Media/Movies" /></div>
+      <div class="field"><label>TrueNAS Staging Root</label><input type="text" id="staging_root" placeholder="/mnt/tank/Media/staging" /></div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Security</h3>
+      <div class="field"><label>Username</label><input type="text" id="s_username" /></div>
+      <div class="field"><label>New Password <span style="color:var(--muted)">(leave blank to keep)</span></label><input type="password" id="new_password" /></div>
+      <div class="field"><label>Apps UID</label><input type="number" id="app_uid" min="0" max="2147483647" /></div>
+      <div class="field"><label>Apps GID</label><input type="number" id="app_gid" min="0" max="2147483647" /></div>
+      <div class="field"><label>Session Timeout (minutes)</label><input type="number" id="session_timeout" min="5" max="1440" /></div>
+      <div class="field"><label>Max Login Attempts</label><input type="number" id="max_login_attempts" min="3" max="20" /></div>
+      <div class="field"><label>Lockout Duration (minutes)</label><input type="number" id="lockout_minutes" min="5" max="60" /></div>
+      <label class="check-row"><input type="checkbox" id="verify_tls" /> Verify TLS certificates for Sonarr, Radarr, and TrueNAS</label>
+    </div>
+
+  </div>
+  <div class="save-bar">
+    <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+    <span class="save-msg" id="save-msg"></span>
+  </div>
+</div>
+
+</main>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let stagingData = {tv:[], movies:[]};
+let stagingFilter = 'all';
+let seedboxCat = 'tv';
+let errorFilter = 'all';
+let errorsData = {};
+let currentTab = 'staging';
+let tabLoaded = {};
+let csrfToken = null;
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[c]));
+}
+
+function jsArg(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '')
+    .replace(/\n/g, '\\n');
+}
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  document.querySelectorAll('.nav-tab')[['staging','seedbox','errors','permissions','settings'].indexOf(name)].classList.add('active');
+  currentTab = name;
+  if (!tabLoaded[name]) { loadTab(name); tabLoaded[name]=true; }
+}
+
+function refreshCurrent() { tabLoaded[currentTab]=false; loadTab(currentTab); tabLoaded[currentTab]=true; }
+
+function loadTab(name) {
+  if (name==='staging') loadStaging();
+  else if (name==='seedbox') loadSeedbox();
+  else if (name==='errors') loadErrors();
+  else if (name==='permissions') loadPermPaths();
+  else if (name==='settings') loadSettings();
+}
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+async function doLogout() {
+  await postJson('/api/logout', {});
+  window.location.href='/login';
+}
+
+function handle401(res) {
+  if (res.status===401) { window.location.href='/login'; return true; }
+  return false;
+}
+
+async function getCsrfToken() {
+  if (csrfToken) return csrfToken;
+  const res = await fetch('/api/csrf');
+  if (handle401(res)) return '';
+  const data = await res.json();
+  csrfToken = data.csrf_token || '';
+  return csrfToken;
+}
+
+async function postJson(url, data) {
+  const token = await getCsrfToken();
+  return fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRF-Token':token},
+    body:JSON.stringify(data || {})
+  });
+}
+
+// ── Staging ────────────────────────────────────────────────────────────────
+async function loadStaging() {
+  document.getElementById('staging-content').innerHTML='<div class="loading">Scanning staging...</div>';
+  const res = await fetch('/api/staging');
+  if (handle401(res)) return;
+  stagingData = await res.json();
+  updateStagingStats();
+  renderStaging();
+}
+
+function updateStagingStats() {
+  const all = [...stagingData.tv, ...stagingData.movies];
+  document.getElementById('s-tv').textContent = stagingData.tv.length;
+  document.getElementById('s-mv').textContent = stagingData.movies.length;
+  document.getElementById('s-miss').textContent = all.filter(f=>!f.has_video).length;
+  document.getElementById('s-ready').textContent = all.filter(f=>f.has_video).length;
+}
+
+function setStagingFilter(f) {
+  stagingFilter=f;
+  document.querySelectorAll('[id^="sf-"]').forEach(b=>b.classList.remove('active'));
+  document.getElementById('sf-'+f).classList.add('active');
+  renderStaging();
+}
+
+function renderStaging() {
+  let tv = stagingData.tv, mv = stagingData.movies;
+  if (stagingFilter==='missing') { tv=tv.filter(f=>!f.has_video); mv=mv.filter(f=>!f.has_video); }
+  else if (stagingFilter==='tv') mv=[];
+  else if (stagingFilter==='movies') tv=[];
+  let html='';
+  if (stagingFilter!=='movies') html+=renderStagingSection('TV',tv,'tv');
+  if (stagingFilter!=='tv') html+=renderStagingSection('Movies',mv,'movies');
+  document.getElementById('staging-content').innerHTML = html||'<div class="empty">No folders match filter</div>';
+}
+
+function renderStagingSection(title, folders, cat) {
+  const missing = folders.filter(f=>!f.has_video).length;
+  return `<div class="section">
+    <div class="section-header">
+      <span class="section-title">${esc(title)}</span>
+      <span class="badge">${folders.length} folders</span>
+      ${missing>0?`<span class="badge warn">${missing} missing video</span>`:''}
+    </div>
+    <div class="folders">
+      ${folders.length===0?'<div class="empty">Empty</div>':folders.map(f=>folderRow(f)).join('')}
+    </div></div>`;
+}
+
+function folderRow(f) {
+  const n = esc(jsArg(f.name));
+  const cat = esc(jsArg(f.category));
+  return `<div class="folder ${f.has_video?'':'no-video'}">
+    <div class="dot ${f.has_video?'ok':'missing'}"></div>
+    <span class="folder-name">${esc(f.name)}</span>
+    <span class="folder-meta">${f.file_count} files</span>
+    <div class="actions">
+      ${!f.has_video?`<button class="btn btn-sync" onclick="syncStaging('${n}','${cat}',this)">⬇ sync</button>`:''}
+      <button class="btn btn-delete" onclick="deleteStaging('${n}','${cat}',this)">✕ delete</button>
+    </div></div>`;
+}
+
+async function syncStaging(name, cat, btn) {
+  btn.disabled=true; btn.textContent='⟳ syncing...';
+  toast(`Syncing ${name}...`,'info');
+  const res = await postJson('/api/sync',{name,category:cat});
+  if (handle401(res)) return;
+  const data=await res.json();
+  if(data.success){toast(`✓ Synced: ${name}`,'success');loadStaging();}
+  else{toast(`✗ ${data.error||data.stderr}`,'error');btn.disabled=false;btn.textContent='⬇ sync';}
+}
+
+async function deleteStaging(name, cat, btn) {
+  if(!confirm(`Delete staging folder:\n${name}`)) return;
+  btn.disabled=true; btn.textContent='⟳...';
+  const res=await postJson('/api/delete',{name,category:cat});
+  if(handle401(res)) return;
+  const data=await res.json();
+  if(data.success){toast(`✓ Deleted: ${name}`,'success');loadStaging();}
+  else{toast(`✗ ${data.error}`,'error');btn.disabled=false;btn.textContent='✕ delete';}
+}
+
+// ── Seedbox ────────────────────────────────────────────────────────────────
+async function loadSeedbox() {
+  document.getElementById('seedbox-content').innerHTML='<div class="loading">Connecting to seedbox...</div>';
+  const res=await fetch(`/api/seedbox?category=${seedboxCat}`);
+  if(handle401(res)) return;
+  const data=await res.json();
+  if(data.error){document.getElementById('seedbox-content').innerHTML=`<div class="empty">Error: ${esc(data.error)}</div>`;return;}
+  const folders=data.folders||[];
+  if(!folders.length){document.getElementById('seedbox-content').innerHTML='<div class="empty">No folders found</div>';return;}
+  document.getElementById('seedbox-content').innerHTML=`
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:1rem">${folders.length} folders on seedbox</div>
+    <div class="seedbox-folders">${folders.map(f=>sbFolderRow(f)).join('')}</div>`;
+}
+
+function setSeedboxCat(cat) {
+  seedboxCat=cat;
+  document.getElementById('sbf-tv').classList.toggle('active',cat==='tv');
+  document.getElementById('sbf-movies').classList.toggle('active',cat==='movies');
+  loadSeedbox();
+}
+
+function sbFolderRow(name) {
+  const n=esc(jsArg(name));
+  return `<div class="sb-folder">
+    <span style="font-size:1rem">📁</span>
+    <span class="sb-folder-name">${esc(name)}</span>
+    <button class="btn btn-sync" onclick="syncFromSeedbox('${n}',this)">⬇ sync</button>
+  </div>`;
+}
+
+async function syncFromSeedbox(name, btn) {
+  btn.disabled=true; btn.textContent='⟳...';
+  toast(`Syncing ${name}...`,'info');
+  const res=await postJson('/api/sync',{name,category:seedboxCat});
+  if(handle401(res)) return;
+  const data=await res.json();
+  if(data.success){toast(`✓ Synced to staging: ${name}`,'success');}
+  else{toast(`✗ ${data.error||data.stderr}`,'error');}
+  btn.disabled=false; btn.textContent='⬇ sync';
+}
+
+// ── Errors ─────────────────────────────────────────────────────────────────
+async function loadErrors() {
+  document.getElementById('errors-content').innerHTML='<div class="loading">Fetching logs...</div>';
+  const res=await fetch('/api/errors');
+  if(handle401(res)) return;
+  errorsData=await res.json();
+  renderErrors();
+}
+
+function setErrorFilter(f) {
+  errorFilter=f;
+  document.querySelectorAll('[id^="ef-"]').forEach(b=>b.classList.remove('active'));
+  document.getElementById('ef-'+f).classList.add('active');
+  renderErrors();
+}
+
+function renderErrors() {
+  let html='';
+  const showSonarr = errorFilter!=='radarr';
+  const showRadarr = errorFilter!=='sonarr';
+
+  if(showSonarr){
+    if(errorsData.sonarr_error) html+=`<div class="empty" style="margin-bottom:1rem">Sonarr: ${esc(errorsData.sonarr_error)}</div>`;
+    else {
+      const items=errorsData.sonarr||[];
+      html+=`<div class="section"><div class="section-header"><span class="section-title">Sonarr</span><span class="badge">${items.length} issue types</span></div>
+      <div class="error-cards">${items.length?items.map(e=>errorCard(e,'sonarr')).join(''):'<div class="empty">No errors — all good!</div>'}</div></div>`;
+    }
+  }
+  if(showRadarr){
+    if(errorsData.radarr_error) html+=`<div class="empty">Radarr: ${esc(errorsData.radarr_error)}</div>`;
+    else {
+      const items=errorsData.radarr||[];
+      html+=`<div class="section"><div class="section-header"><span class="section-title">Radarr</span><span class="badge">${items.length} issue types</span></div>
+      <div class="error-cards">${items.length?items.map(e=>errorCard(e,'radarr')).join(''):'<div class="empty">No errors — all good!</div>'}</div></div>`;
+    }
+  }
+  document.getElementById('errors-content').innerHTML=html||'<div class="empty">No data</div>';
+}
+
+const ERROR_LABELS={
+  permission:'Permission Denied',
+  no_files:'Missing Video File',
+  duplicate:'Duplicate File',
+  disk_space:'Disk Space',
+  other:'Other'
+};
+
+function errorCard(e, app) {
+  const type = Object.prototype.hasOwnProperty.call(ERROR_LABELS, e.type) ? e.type : 'other';
+  const label = ERROR_LABELS[type]||type;
+  return `<div class="error-card ${type}">
+    <div class="error-card-top">
+      <span class="error-type-badge ${type}">${esc(label)}</span>
+      <span class="error-label">${esc(e.label)}</span>
+      <span class="error-count">×${e.count}</span>
+    </div>
+    ${e.detail?`<div class="error-detail">${esc(e.detail)}</div>`:''}
+    <div class="error-actions">
+      ${type==='permission'?`<button class="btn btn-action" onclick="fixPerms('all')">Fix Permissions</button>`:''}
+      ${type==='no_files'?`<button class="btn btn-sync" onclick="switchTab('staging')">Go to Staging</button>`:''}
+    </div>
+  </div>`;
+}
+
+// ── Permissions ────────────────────────────────────────────────────────────
+async function loadPermPaths() {
+  const res=await fetch('/api/settings');
+  if(handle401(res)) return;
+  const cfg=await res.json();
+  document.getElementById('perm-tv-path').textContent=cfg.tv_library||'/mnt/tank/Media/TV';
+  document.getElementById('perm-movies-path').textContent=cfg.movies_library||'/mnt/tank/Media/Movies';
+  document.getElementById('perm-staging-path').textContent=cfg.staging_root||'/mnt/tank/Media/staging';
+}
+
+async function fixPerms(target) {
+  const result=document.getElementById('perm-result');
+  result.style.display='none';
+  toast(`Applying permissions (${target})...`,'info');
+  const res=await postJson('/api/fix-permissions',{target});
+  if(handle401(res)) return;
+  const data=await res.json();
+  if(data.error){toast(`✗ ${data.error}`,'error');return;}
+  const results=data.results||[];
+  const allOk=results.every(r=>r.success);
+  result.style.display='block';
+  result.style.color=allOk?'var(--success)':'var(--danger)';
+  result.innerHTML=results.map(r=>`${r.success?'✓':'✗'} ${esc(r.path)}${r.error?' — '+esc(r.error):''}`).join('<br>');
+  toast(allOk?'✓ Permissions fixed':'Some paths failed — check results','success');
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const res=await fetch('/api/settings');
+  if(handle401(res)) return;
+  const cfg=await res.json();
+  const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
+    'truenas_url','truenas_api_key','rclone_remote','seedbox_tv_path','seedbox_movies_path',
+    'rclone_transfers','rclone_excludes',
+    'staging_tv','staging_movies','tv_library','movies_library','staging_root',
+    'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
+  fields.forEach(f=>{
+    const el=document.getElementById(f);
+    if(el&&cfg[f]!==undefined) el.value=Array.isArray(cfg[f]) ? cfg[f].join('\n') : cfg[f];
+  });
+  document.getElementById('verify_tls').checked=!!cfg.verify_tls;
+  document.getElementById('s_username').value=cfg.username||'';
+}
+
+async function saveSettings() {
+  const msg=document.getElementById('save-msg');
+  msg.textContent='Saving...'; msg.className='save-msg';
+  const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
+    'truenas_url','truenas_api_key','rclone_remote','seedbox_tv_path','seedbox_movies_path',
+    'rclone_transfers','rclone_excludes',
+    'staging_tv','staging_movies','tv_library','movies_library','staging_root',
+    'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
+  const data={};
+  fields.forEach(f=>{ const el=document.getElementById(f); if(el) data[f]=el.value; });
+  data.verify_tls=document.getElementById('verify_tls').checked;
+  data.username=document.getElementById('s_username').value;
+  const pw=document.getElementById('new_password').value;
+  if(pw) data.new_password=pw;
+  const res=await postJson('/api/settings',data);
+  if(handle401(res)) return;
+  const result=await res.json();
+  if(result.success){ msg.textContent='✓ Saved'; msg.className='save-msg ok'; document.getElementById('new_password').value=''; }
+  else { msg.textContent='✗ '+result.error; msg.className='save-msg err'; }
+  setTimeout(()=>msg.textContent='',3000);
+}
+
+async function testConn(service) {
+  const el=document.getElementById(service+'-status');
+  el.textContent='...'; el.className='test-status';
+  const res=await postJson('/api/test-connection',{service});
+  if(handle401(res)) return;
+  const data=await res.json();
+  el.textContent=data.success?'✓ OK':'✗ '+( data.error||'failed');
+  el.className='test-status '+(data.success?'ok':'err');
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type='info') {
+  const el=document.createElement('div');
+  el.className=`toast ${type}`; el.textContent=msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(()=>el.remove(),5000);
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+loadStaging();
+tabLoaded['staging']=true;
+</script>
+</body>
+</html>
