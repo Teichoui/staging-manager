@@ -56,6 +56,8 @@ DEFAULT_CONFIG = {
     "radarr_api_key": "",
     "truenas_url": "http://host.docker.internal",
     "truenas_api_key": "",
+    "cf_access_client_id": "",
+    "cf_access_client_secret": "",
     "verify_tls": True,
     "app_uid": 568,
     "app_gid": 568,
@@ -74,7 +76,7 @@ INT_CONFIG_FIELDS = {
 }
 
 BOOL_CONFIG_FIELDS = {"verify_tls"}
-SENSITIVE_CONFIG_FIELDS = {"sonarr_api_key", "radarr_api_key", "truenas_api_key"}
+SENSITIVE_CONFIG_FIELDS = {"sonarr_api_key", "radarr_api_key", "truenas_api_key", "cf_access_client_secret"}
 SECRET_MASK = "__STAGING_MANAGER_SECRET_SET__"  # nosec B105
 
 os.makedirs(BASE_DIR, exist_ok=True)
@@ -304,11 +306,14 @@ def truenas_api(method, endpoint, data=None):
     base_url = validate_service_url(cfg['truenas_url'], 'truenas_url')
     url = f"{base_url}/api/v2.0/{endpoint}"
     body = json.dumps(data).encode() if data else None
-    req = urllib.request.Request(url, data=body, method=method,
-        headers={
-            'Authorization': f"Bearer {cfg['truenas_api_key']}",
-            'Content-Type': 'application/json'
-        })
+    headers = {
+        'Authorization': f"Bearer {cfg['truenas_api_key']}",
+        'Content-Type': 'application/json'
+    }
+    if cfg.get('cf_access_client_id') and cfg.get('cf_access_client_secret'):
+        headers['CF-Access-Client-Id'] = cfg['cf_access_client_id']
+        headers['CF-Access-Client-Secret'] = cfg['cf_access_client_secret']
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
     ctx = ssl.create_default_context()
     if not cfg.get('verify_tls'):
         ctx.check_hostname = False

@@ -268,6 +268,8 @@ main { flex:1; padding:2rem; overflow-y:auto; }
         <span class="test-status" id="truenas-status"></span>
       </div>
       <div class="field"><label>API Key</label><input type="password" id="truenas_api_key" placeholder="••••••••" /></div>
+      <div class="field"><label>CF Access Client ID <span style="color:var(--muted);font-weight:normal;font-size:.8rem">(optional — only if TrueNAS is behind Cloudflare Access)</span></label><input type="text" id="cf_access_client_id" placeholder="xxxxxxxx.access" /></div>
+      <div class="field"><label>CF Access Client Secret</label><input type="password" id="cf_access_client_secret" placeholder="••••••••" /></div>
     </div>
 
     <div class="settings-section">
@@ -326,7 +328,7 @@ let currentTab = 'staging';
 let tabLoaded = {};
 let csrfToken = null;
 const SECRET_MASK = '__STAGING_MANAGER_SECRET_SET__';
-const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key']);
+const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key','cf_access_client_secret']);
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -611,7 +613,8 @@ async function loadSettings() {
   if(handle401(res)) return;
   const cfg=await res.json();
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
-    'truenas_url','truenas_api_key','rclone_remote','seedbox_tv_path','seedbox_movies_path',
+    'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
+    'rclone_remote','seedbox_tv_path','seedbox_movies_path',
     'rclone_transfers','rclone_excludes',
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
@@ -636,7 +639,8 @@ async function saveSettings() {
   const msg=document.getElementById('save-msg');
   msg.textContent='Saving...'; msg.className='save-msg';
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
-    'truenas_url','truenas_api_key','rclone_remote','seedbox_tv_path','seedbox_movies_path',
+    'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
+    'rclone_remote','seedbox_tv_path','seedbox_movies_path',
     'rclone_transfers','rclone_excludes',
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
