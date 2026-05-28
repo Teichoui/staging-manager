@@ -1,6 +1,6 @@
 services:
   staging-manager:
-    image: YOUR_DOCKERHUB_USER/staging-manager:latest
+    image: ghcr.io/teichoui/staging-manager:latest
     restart: unless-stopped
     ports:
       - "7474:7474"
