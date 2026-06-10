@@ -126,6 +126,12 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 .sb-folder:hover { border-color:#2e2e4e; }
 .sb-folder-name { flex:1; font-size:.78rem; word-break:break-all; }
 
+/* Sync log */
+.log-viewer { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:1rem; font-family:monospace; font-size:.7rem; color:var(--muted); max-height:380px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+.sync-status-idle { color:var(--success); }
+.sync-status-syncing { color:var(--accent); }
+.sync-status-error { color:var(--danger); }
+
 /* Misc */
 .loading { color:var(--muted); font-size:.85rem; padding:2rem; text-align:center; }
 .empty { color:var(--muted); font-size:.8rem; padding:1rem; text-align:center; border:1px dashed var(--border); border-radius:6px; }
@@ -146,6 +152,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
   <span class="nav-logo">⚡ MEDIA</span>
   <button class="nav-tab active" onclick="switchTab('staging')">📦 Staging</button>
   <button class="nav-tab" onclick="switchTab('seedbox')">🌐 Seedbox</button>
+  <button class="nav-tab" onclick="switchTab('sync')">⚡ Sync</button>
   <button class="nav-tab" onclick="switchTab('errors')">⚠️ Errors</button>
   <button class="nav-tab" onclick="switchTab('permissions')">🔒 Permissions</button>
   <button class="nav-tab" onclick="switchTab('settings')">⚙️ Settings</button>
@@ -184,6 +191,56 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     </div>
   </div>
   <div id="seedbox-content"><div class="loading">Loading seedbox...</div></div>
+</div>
+
+<!-- ── SYNC ── -->
+<div id="tab-sync" class="tab-content">
+  <div class="app-header">
+    <h2>Torrent Sync</h2>
+    <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+      <button class="btn btn-action" style="font-size:.7rem" onclick="syncNow()" id="sync-now-btn">⚡ Sync Now</button>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="stats" style="margin-bottom:1.5rem">
+    <div class="stat"><div class="stat-label">Status</div><div class="stat-value" id="sync-status-val" style="font-size:1.1rem">—</div></div>
+    <div class="stat"><div class="stat-label">Last Sync</div><div class="stat-value" id="sync-last" style="font-size:.9rem">—</div></div>
+    <div class="stat"><div class="stat-label">Next Sync</div><div class="stat-value" id="sync-next" style="font-size:.9rem">—</div></div>
+    <div class="stat"><div class="stat-label">Active</div><div class="stat-value" id="sync-active" style="font-size:.75rem;word-break:break-all">—</div></div>
+  </div>
+
+  <!-- Interval + error -->
+  <div style="display:flex;align-items:center;gap:1rem;margin-bottom:2rem;flex-wrap:wrap;font-size:.78rem;color:var(--muted)">
+    Interval:
+    <select id="sync-interval-select" onchange="updateSyncInterval()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:.3rem .6rem;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.78rem">
+      <option value="1">1 min</option>
+      <option value="5">5 min</option>
+      <option value="10">10 min</option>
+      <option value="15">15 min</option>
+      <option value="30">30 min</option>
+      <option value="60">60 min</option>
+    </select>
+    <span id="sync-error-msg" style="color:var(--danger)"></span>
+  </div>
+
+  <!-- History -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">History</span>
+      <span class="badge" id="sync-history-count">—</span>
+    </div>
+    <div id="sync-history-content"><div class="loading">Loading...</div></div>
+  </div>
+
+  <!-- rclone log -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">rclone Log</span>
+      <button class="btn btn-action" style="font-size:.65rem;padding:.2rem .5rem" onclick="loadSyncLog()">↻</button>
+    </div>
+    <div class="log-viewer" id="sync-log">(no log entries yet)</div>
+  </div>
 </div>
 
 <!-- ── ERRORS ── -->
@@ -286,6 +343,25 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     </div>
 
     <div class="settings-section">
+      <h3>Ultra.cc / rTorrent</h3>
+      <div class="test-row">
+        <div class="field"><label>rTorrent XMLRPC URL</label><input type="text" id="rtorrent_url" placeholder="https://user.proton.usbx.me/RPC2" /></div>
+        <button class="btn btn-action" onclick="testConn('rtorrent')">Test</button>
+        <span class="test-status" id="rtorrent-status"></span>
+      </div>
+      <div class="field"><label>ruTorrent Username</label><input type="text" id="rtorrent_user" placeholder="teichou" /></div>
+      <div class="field"><label>ruTorrent Password</label><input type="password" id="rtorrent_password" placeholder="••••••••" /></div>
+      <div class="field"><label>SFTP Host</label><input type="text" id="ultracc_host" placeholder="teichou.proton.usbx.me" /></div>
+      <div class="field"><label>SFTP User</label><input type="text" id="ultracc_user" placeholder="teichou" /></div>
+      <div class="field"><label>SFTP Port</label><input type="number" id="ultracc_ssh_port" min="1" max="65535" placeholder="22" /></div>
+      <div class="field">
+        <label>SSH Key Path <span style="color:var(--muted);font-weight:normal;font-size:.75rem">— put key at /mnt/tank/apps/staging-manager/ultracc_id, then chown 568:568</span></label>
+        <input type="text" id="ultracc_ssh_key" placeholder="/config/ultracc_id" />
+      </div>
+      <div class="field"><label>Sync Interval (minutes)</label><input type="number" id="sync_interval" min="1" max="60" /></div>
+    </div>
+
+    <div class="settings-section">
       <h3>Media Paths</h3>
       <div class="field"><label>Container Staging TV</label><input type="text" id="staging_tv" placeholder="/media/staging/tv-sonarr" /></div>
       <div class="field"><label>Container Staging Movies</label><input type="text" id="staging_movies" placeholder="/media/staging/radarr" /></div>
@@ -328,7 +404,7 @@ let currentTab = 'staging';
 let tabLoaded = {};
 let csrfToken = null;
 const SECRET_MASK = '__STAGING_MANAGER_SECRET_SET__';
-const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key','cf_access_client_secret']);
+const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key','cf_access_client_secret','rtorrent_password']);
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -345,11 +421,15 @@ function jsArg(value) {
 }
 
 // ── Tab switching ──────────────────────────────────────────────────────────
+let syncPollTimer = null;
+
 function switchTab(name) {
+  // Stop sync polling when leaving sync tab
+  if (syncPollTimer && name !== 'sync') { clearInterval(syncPollTimer); syncPollTimer = null; }
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
-  document.querySelectorAll('.nav-tab')[['staging','seedbox','errors','permissions','settings'].indexOf(name)].classList.add('active');
+  document.querySelectorAll('.nav-tab')[['staging','seedbox','sync','errors','permissions','settings'].indexOf(name)].classList.add('active');
   currentTab = name;
   if (!tabLoaded[name]) { loadTab(name); tabLoaded[name]=true; }
 }
@@ -359,6 +439,7 @@ function refreshCurrent() { tabLoaded[currentTab]=false; loadTab(currentTab); ta
 function loadTab(name) {
   if (name==='staging') loadStaging();
   else if (name==='seedbox') loadSeedbox();
+  else if (name==='sync') loadSync();
   else if (name==='errors') loadErrors();
   else if (name==='permissions') loadPermPaths();
   else if (name==='settings') loadSettings();
@@ -616,6 +697,8 @@ async function loadSettings() {
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
     'rclone_remote','seedbox_tv_path','seedbox_movies_path',
     'rclone_transfers','rclone_excludes',
+    'rtorrent_url','rtorrent_user','rtorrent_password',
+    'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   fields.forEach(f=>{
@@ -642,6 +725,8 @@ async function saveSettings() {
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
     'rclone_remote','seedbox_tv_path','seedbox_movies_path',
     'rclone_transfers','rclone_excludes',
+    'rtorrent_url','rtorrent_user','rtorrent_password',
+    'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   const data={};
@@ -671,6 +756,84 @@ async function testConn(service) {
   const data=await res.json();
   el.textContent=data.success?'✓ OK':'✗ '+( data.error||'failed');
   el.className='test-status '+(data.success?'ok':'err');
+}
+
+// ── Sync ───────────────────────────────────────────────────────────────────
+async function loadSync() {
+  await loadSyncStatus();
+  await loadSyncHistory();
+  await loadSyncLog();
+  if (syncPollTimer) clearInterval(syncPollTimer);
+  syncPollTimer = setInterval(()=>{ if(currentTab==='sync') loadSyncStatus(); }, 10000);
+}
+
+async function loadSyncStatus() {
+  const res = await fetch('/api/torrent-sync/status');
+  if (handle401(res)) return;
+  const d = await res.json();
+  const statusEl = document.getElementById('sync-status-val');
+  const s = d.status || 'idle';
+  statusEl.textContent = s;
+  statusEl.className = 'stat-value sync-status-' + s;
+  document.getElementById('sync-last').textContent =
+    d.last_sync ? new Date(d.last_sync*1000).toLocaleTimeString() : '—';
+  document.getElementById('sync-next').textContent =
+    d.next_sync ? new Date(d.next_sync*1000).toLocaleTimeString() : '—';
+  document.getElementById('sync-active').textContent = d.active_torrent || '—';
+  document.getElementById('sync-error-msg').textContent = d.last_error || '';
+  const sel = document.getElementById('sync-interval-select');
+  if (sel && d.interval) sel.value = String(d.interval);
+  const btn = document.getElementById('sync-now-btn');
+  if (btn) btn.disabled = s === 'syncing';
+}
+
+async function syncNow() {
+  const btn = document.getElementById('sync-now-btn');
+  btn.disabled = true;
+  toast('Starting sync...','info');
+  const res = await postJson('/api/torrent-sync/now', {});
+  if (handle401(res)) return;
+  const d = await res.json();
+  if (d.error) { toast('✗ '+d.error,'error'); btn.disabled=false; }
+  else { toast('✓ Sync started','success'); setTimeout(loadSyncStatus, 1500); }
+}
+
+async function updateSyncInterval() {
+  const val = parseInt(document.getElementById('sync-interval-select').value);
+  const res = await postJson('/api/torrent-sync/interval', {interval:val});
+  if (handle401(res)) return;
+  const d = await res.json();
+  if (d.success) toast(`✓ Interval set to ${val} min`,'info');
+  else toast('✗ '+(d.error||'failed'),'error');
+}
+
+async function loadSyncHistory() {
+  const res = await fetch('/api/torrent-sync/history');
+  if (handle401(res)) return;
+  const d = await res.json();
+  const items = d.history || [];
+  document.getElementById('sync-history-count').textContent = items.length+' torrents';
+  if (!items.length) {
+    document.getElementById('sync-history-content').innerHTML='<div class="empty">No synced torrents yet</div>';
+    return;
+  }
+  const rows = items.map(t=>`
+    <div class="folder">
+      <div class="dot ok"></div>
+      <span class="folder-name">${esc(t.torrent_name)}</span>
+      <span class="folder-meta">${esc(t.category)} · ${esc(t.synced_at)}</span>
+      <span class="badge ok">${esc(t.status)}</span>
+    </div>`).join('');
+  document.getElementById('sync-history-content').innerHTML=`<div class="folders">${rows}</div>`;
+}
+
+async function loadSyncLog() {
+  const el = document.getElementById('sync-log');
+  const res = await fetch('/api/torrent-sync/log');
+  if (handle401(res)) return;
+  const d = await res.json();
+  el.textContent = (d.lines||[]).join('\n') || '(no log entries yet)';
+  el.scrollTop = el.scrollHeight;
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────────

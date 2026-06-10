@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client  # nosec B404
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from apscheduler.schedulers.background import BackgroundScheduler
 import urllib.request, urllib.error
 from urllib.parse import urlparse
 
@@ -17,6 +18,8 @@ SETUP_TOKEN_PATH = os.path.join(BASE_DIR, 'setup.token')
 CERT_PATH = os.path.join(BASE_DIR, 'cert.pem')
 KEY_PATH = os.path.join(BASE_DIR, 'key.pem')
 LOG_PATH = os.environ.get('STAGING_MANAGER_LOG_PATH', os.path.join(BASE_DIR, 'app.log'))
+DB_PATH = os.path.join(BASE_DIR, 'staging.db')
+RCLONE_TORRENT_LOG = os.path.join(BASE_DIR, 'rclone-torrent.log')
 APP_PORT = int(os.environ.get('STAGING_MANAGER_PORT', '7474'))
 APP_HOST = os.environ.get('STAGING_MANAGER_HOST', '127.0.0.1')
 ENABLE_HTTPS = os.environ.get('STAGING_MANAGER_HTTPS', '').lower() in ('1', 'true', 'yes')
@@ -63,7 +66,15 @@ DEFAULT_CONFIG = {
     "app_gid": 568,
     "session_timeout": 60,
     "max_login_attempts": 5,
-    "lockout_minutes": 15
+    "lockout_minutes": 15,
+    "ultracc_host": "",
+    "ultracc_user": "",
+    "ultracc_ssh_key": "/config/ultracc_id",
+    "ultracc_ssh_port": 22,
+    "rtorrent_url": "",
+    "rtorrent_user": "",
+    "rtorrent_password": "",
+    "sync_interval": 5,
 }
 
 INT_CONFIG_FIELDS = {
@@ -73,10 +84,12 @@ INT_CONFIG_FIELDS = {
     "session_timeout": (60, 5, 1440),
     "max_login_attempts": (5, 3, 20),
     "lockout_minutes": (15, 5, 60),
+    "sync_interval": (5, 1, 60),
+    "ultracc_ssh_port": (22, 1, 65535),
 }
 
 BOOL_CONFIG_FIELDS = {"verify_tls"}
-SENSITIVE_CONFIG_FIELDS = {"sonarr_api_key", "radarr_api_key", "truenas_api_key", "cf_access_client_secret"}
+SENSITIVE_CONFIG_FIELDS = {"sonarr_api_key", "radarr_api_key", "truenas_api_key", "cf_access_client_secret", "rtorrent_password"}
 SECRET_MASK = "__STAGING_MANAGER_SECRET_SET__"  # nosec B105
 
 os.makedirs(BASE_DIR, exist_ok=True)
@@ -154,6 +167,25 @@ def validate_seedbox_path(path, field_name):
     if normalized == allowed or normalized.startswith(allowed + '/'):
         return normalized
     raise ValueError(f'{field_name} must stay under {SEEDBOX_ALLOWED_ROOT}')
+
+def validate_external_url(url, field_name):
+    """Like validate_service_url but allows external hostnames (e.g. rTorrent on a seedbox)."""
+    if not isinstance(url, str) or not url.strip():
+        return ''
+    url = url.strip().rstrip('/')
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        raise ValueError(f'{field_name} must be an http(s) URL')
+    host = parsed.hostname.lower()
+    # Block metadata/link-local IPs regardless
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise ValueError(f'{field_name} host is not allowed')
+    except ValueError as exc:
+        if 'host is not allowed' in str(exc):
+            raise
+    return url
 
 def public_error(message='Operation failed'):
     return jsonify({'error': message}), 500
@@ -326,6 +358,144 @@ def require_truenas_key(cfg):
     if not cfg.get('truenas_api_key'):
         raise ValueError('TrueNAS API key not configured in Settings')
 
+# ── SQLite DB ─────────────────────────────────────────────────────────────────
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS synced_torrents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            torrent_hash TEXT UNIQUE NOT NULL,
+            torrent_name TEXT NOT NULL,
+            remote_path TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            category TEXT DEFAULT 'tv',
+            synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'copied'
+        )''')
+        conn.commit()
+
+# ── rTorrent XMLRPC client ────────────────────────────────────────────────────
+def query_rtorrent(cfg):
+    url = cfg.get('rtorrent_url', '').strip()
+    user = cfg.get('rtorrent_user', '').strip()
+    password = cfg.get('rtorrent_password', '').strip()
+    if not url or not user or not password:
+        raise ValueError('rTorrent URL, username, and password are required in Settings')
+    parsed = urlparse(url)
+    auth_url = f"{parsed.scheme}://{user}:{password}@{parsed.netloc}{parsed.path}"
+    ctx = ssl.create_default_context()
+    if not cfg.get('verify_tls'):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    transport = xmlrpc.client.SafeTransport(context=ctx)
+    client = xmlrpc.client.ServerProxy(auth_url, transport=transport)
+    results = client.d.multicall2('', 'complete',
+        'd.hash=', 'd.name=', 'd.base_path=', 'd.complete=', 'd.custom1=')
+    completed = []
+    for torrent in results:
+        hash_, name, base_path, complete, label = torrent
+        if complete == 1:
+            completed.append({
+                'hash': hash_,
+                'name': name,
+                'base_path': base_path,
+                'label': (label or '').lower(),
+            })
+    return completed
+
+# ── Torrent sync engine ───────────────────────────────────────────────────────
+torrent_sync_state = {
+    'status': 'idle',       # idle | syncing | error
+    'last_sync': None,      # unix timestamp
+    'last_error': None,     # string
+    'active_torrent': None, # torrent name currently copying
+}
+torrent_sync_lock = threading.Lock()
+
+def run_torrent_sync():
+    if not torrent_sync_lock.acquire(blocking=False):
+        logger.info('torrent sync skipped: already running')
+        return
+    torrent_sync_state['status'] = 'syncing'
+    torrent_sync_state['last_error'] = None
+    try:
+        cfg = load_config()
+        torrents = query_rtorrent(cfg)
+        logger.info('torrent sync: %d completed torrents on seedbox', len(torrents))
+
+        with sqlite3.connect(DB_PATH) as conn:
+            for t in torrents:
+                already = conn.execute(
+                    'SELECT id FROM synced_torrents WHERE torrent_hash=?', (t['hash'],)
+                ).fetchone()
+                if already:
+                    continue
+
+                # Route by rTorrent label: anything with 'radarr' → movies, else tv
+                if 'radarr' in t['label']:
+                    category = 'movies'
+                    local_base = cfg['staging_movies']
+                else:
+                    category = 'tv'
+                    local_base = cfg['staging_tv']
+
+                local_path = f"{local_base}/{t['name']}"
+                torrent_sync_state['active_torrent'] = t['name']
+
+                host = cfg.get('ultracc_host', '').strip()
+                user = cfg.get('ultracc_user', '').strip()
+                port = cfg.get('ultracc_ssh_port', 22)
+                key_file = cfg.get('ultracc_ssh_key', '/config/ultracc_id').strip()
+                remote_path = t['base_path']
+
+                if not host or not user:
+                    logger.warning('torrent sync: ultracc host/user not configured')
+                    break
+
+                sftp_src = f':sftp,host={host},user={user},port={port},key_file={key_file}:{remote_path}'
+                cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
+                       '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
+                       '--transfers', str(cfg.get('rclone_transfers', 8))]
+                for pattern in cfg.get('rclone_excludes', []):
+                    cmd.extend(['--exclude', pattern])
+
+                logger.info('torrent sync copying: name=%s → %s', t['name'], local_path)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
+
+                if result.returncode == 0:
+                    conn.execute(
+                        'INSERT OR IGNORE INTO synced_torrents '
+                        '(torrent_hash, torrent_name, remote_path, local_path, category) '
+                        'VALUES (?,?,?,?,?)',
+                        (t['hash'], t['name'], remote_path, local_path, category)
+                    )
+                    conn.commit()
+                    logger.info('torrent sync success: %s', t['name'])
+                else:
+                    logger.warning('torrent sync failed: name=%s stderr=%s',
+                                   t['name'], result.stderr[:500])
+
+        torrent_sync_state['last_sync'] = time.time()
+        torrent_sync_state['status'] = 'idle'
+        torrent_sync_state['active_torrent'] = None
+
+    except Exception as e:
+        logger.exception('torrent sync error: %s', e)
+        torrent_sync_state['status'] = 'error'
+        torrent_sync_state['last_error'] = str(e)
+        torrent_sync_state['active_torrent'] = None
+    finally:
+        torrent_sync_lock.release()
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+scheduler = BackgroundScheduler(daemon=True)
+
+def reschedule_sync(interval_minutes):
+    interval_minutes = max(1, min(60, int(interval_minutes)))
+    if scheduler.get_job('torrent_sync'):
+        scheduler.remove_job('torrent_sync')
+    scheduler.add_job(run_torrent_sync, 'interval', minutes=interval_minutes,
+                      id='torrent_sync', replace_existing=True)
+
 # ── Pages ─────────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
@@ -479,6 +649,7 @@ def save_settings():
         cfg['rclone_remote'] = validate_rclone_remote_name(cfg['rclone_remote'])
         cfg['seedbox_tv_path'] = validate_seedbox_path(cfg['seedbox_tv_path'], 'seedbox_tv_path')
         cfg['seedbox_movies_path'] = validate_seedbox_path(cfg['seedbox_movies_path'], 'seedbox_movies_path')
+        cfg['rtorrent_url'] = validate_external_url(cfg.get('rtorrent_url', ''), 'rtorrent_url')
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     # Handle password change
@@ -492,6 +663,7 @@ def save_settings():
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
     save_config(cfg)
+    reschedule_sync(cfg.get('sync_interval', 5))
     logger.info('settings updated user=%s', cfg.get('username', ''))
     return jsonify({'success': True})
 
@@ -851,10 +1023,96 @@ def test_connection():
             if r.returncode != 0:
                 logger.warning('rclone test failed stderr=%s', r.stderr.strip())
                 return jsonify({'success': False, 'error': 'rclone test failed'})
+        elif service == 'rtorrent':
+            query_rtorrent(cfg)
         return jsonify({'success': True})
     except Exception as e:
         logger.warning('connection test failed service=%s error=%s', service, e)
         return jsonify({'success': False, 'error': 'Connection test failed'})
+
+# ── Torrent Sync API ──────────────────────────────────────────────────────────
+@app.route('/api/torrent-sync/status')
+@limiter.limit("30 per minute")
+def torrent_sync_status():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    job = scheduler.get_job('torrent_sync')
+    next_run = None
+    if job and job.next_run_time:
+        next_run = job.next_run_time.timestamp()
+    return jsonify({
+        'status': torrent_sync_state['status'],
+        'last_sync': torrent_sync_state['last_sync'],
+        'last_error': torrent_sync_state['last_error'],
+        'active_torrent': torrent_sync_state['active_torrent'],
+        'next_sync': next_run,
+        'interval': load_config().get('sync_interval', 5),
+    })
+
+@app.route('/api/torrent-sync/now', methods=['POST'])
+@limiter.limit("10 per minute")
+def torrent_sync_now():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    if torrent_sync_state['status'] == 'syncing':
+        return jsonify({'error': 'Sync already running'}), 429
+    t = threading.Thread(target=run_torrent_sync, daemon=True)
+    t.start()
+    return jsonify({'started': True})
+
+@app.route('/api/torrent-sync/interval', methods=['POST'])
+@limiter.limit("10 per minute")
+def set_torrent_sync_interval():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.json or {}
+    try:
+        interval = max(1, min(60, int(data.get('interval', 5))))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid interval'}), 400
+    cfg = load_config()
+    cfg['sync_interval'] = interval
+    save_config(cfg)
+    reschedule_sync(interval)
+    logger.info('torrent sync interval updated to %d min', interval)
+    return jsonify({'success': True, 'interval': interval})
+
+@app.route('/api/torrent-sync/history')
+@limiter.limit("20 per minute")
+def torrent_sync_history():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                'SELECT torrent_name, category, synced_at, status, local_path '
+                'FROM synced_torrents ORDER BY id DESC LIMIT 100'
+            ).fetchall()
+        return jsonify({'history': [dict(r) for r in rows]})
+    except Exception as e:
+        logger.exception('torrent sync history error')
+        return public_error('Could not read history')
+
+@app.route('/api/torrent-sync/log')
+@limiter.limit("20 per minute")
+def torrent_sync_log():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        if not os.path.exists(RCLONE_TORRENT_LOG):
+            return jsonify({'lines': []})
+        with open(RCLONE_TORRENT_LOG) as f:
+            lines = f.readlines()
+        return jsonify({'lines': [l.rstrip() for l in lines[-100:]]})
+    except Exception:
+        logger.exception('torrent sync log read error')
+        return public_error('Could not read log')
+
+init_db()
+_startup_cfg = load_config()
+scheduler.start()
+reschedule_sync(_startup_cfg.get('sync_interval', 5))
 
 if __name__ == '__main__':
     if ENABLE_HTTPS and not os.path.exists(CERT_PATH):
