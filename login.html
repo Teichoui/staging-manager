@@ -20,6 +20,8 @@
   .btn:hover { opacity:.85; }
   .btn:disabled { opacity:.4; cursor:not-allowed; }
   .error { margin-top:1rem; color:var(--danger); font-size:.78rem; text-align:center; display:none; }
+  .remember { display:flex; align-items:center; gap:.5rem; margin-top:.75rem; font-size:.75rem; color:var(--muted); cursor:pointer; }
+  .remember input[type=checkbox] { width:auto; accent-color:var(--accent); cursor:pointer; }
 </style>
 </head>
 <body>
@@ -28,6 +30,7 @@
   <div class="sub">Sign in to continue</div>
   <div class="field"><label>Username</label><input type="text" id="username" autocomplete="username" /></div>
   <div class="field"><label>Password</label><input type="password" id="password" autocomplete="current-password" /></div>
+  <label class="remember"><input type="checkbox" id="remember" /> Remember me for 30 days</label>
   <button class="btn" onclick="doLogin()">Sign In</button>
   <div class="error" id="error"></div>
 </div>
@@ -41,7 +44,8 @@
     if (!u||!p) return;
     btn.disabled=true; btn.textContent='Signing in...'; err.style.display='none';
     try {
-      const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u,password:p}) });
+      const remember = document.getElementById('remember').checked;
+      const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u,password:p,remember_me:remember}) });
       const data = await res.json();
       if (data.success) { window.location.href='/'; }
       else { err.textContent=data.error||'Invalid credentials'; err.style.display='block'; btn.disabled=false; btn.textContent='Sign In'; }

@@ -278,7 +278,8 @@ def is_authenticated():
     if not session.get('authenticated'):
         return False
     cfg = load_config()
-    if time.time() - session.get('login_time', 0) > cfg['session_timeout'] * 60:
+    timeout = 30 * 24 * 60 if session.get('remember_me') else cfg['session_timeout']
+    if time.time() - session.get('login_time', 0) > timeout * 60:
         session.clear()
         return False
     return True
@@ -557,11 +558,14 @@ def login():
         p_ok = False
     if u_ok and p_ok:
         failed_attempts[ip] = []
+        remember = bool(data.get('remember_me'))
         session.clear()
         session['authenticated'] = True
         session['login_time'] = time.time()
         session['csrf_token'] = secrets.token_urlsafe(32)
+        session['remember_me'] = remember
         session.permanent = True
+        app.permanent_session_lifetime = timedelta(days=30) if remember else timedelta(minutes=load_config().get('session_timeout', 60))
         logger.info('login success ip=%s user=%s', ip, cfg['username'])
         return jsonify({'success': True})
     failed_attempts[ip].append(time.time())
