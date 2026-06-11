@@ -774,9 +774,11 @@ async function loadSync() {
     const prev = document.getElementById('sync-status-val')?.textContent;
     await loadSyncStatus();
     const cur = document.getElementById('sync-status-val')?.textContent;
-    // Refresh history when a sync just finished
+    // Keep log live while syncing
+    if (cur === 'syncing') loadSyncLog();
+    // Refresh history + log when sync just finished
     if (prev === 'syncing' && cur !== 'syncing') { loadSyncHistory(); loadSyncLog(); }
-  }, 6000);
+  }, 3000);
 }
 
 async function loadSyncStatus() {
