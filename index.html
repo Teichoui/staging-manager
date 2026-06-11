@@ -354,10 +354,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
       <div class="field"><label>SFTP Host</label><input type="text" id="ultracc_host" placeholder="teichou.proton.usbx.me" /></div>
       <div class="field"><label>SFTP User</label><input type="text" id="ultracc_user" placeholder="teichou" /></div>
       <div class="field"><label>SFTP Port</label><input type="number" id="ultracc_ssh_port" min="1" max="65535" placeholder="22" /></div>
-      <div class="field">
-        <label>SSH Key Path <span style="color:var(--muted);font-weight:normal;font-size:.75rem">— put key at /mnt/tank/apps/staging-manager/ultracc_id, then chown 568:568</span></label>
-        <input type="text" id="ultracc_ssh_key" placeholder="/config/ultracc_id" />
-      </div>
+      <div class="field"><label>SFTP Password</label><input type="password" id="ultracc_ssh_password" placeholder="••••••••" /></div>
       <div class="field"><label>Sync Interval (minutes)</label><input type="number" id="sync_interval" min="1" max="60" /></div>
     </div>
 
@@ -404,7 +401,7 @@ let currentTab = 'staging';
 let tabLoaded = {};
 let csrfToken = null;
 const SECRET_MASK = '__STAGING_MANAGER_SECRET_SET__';
-const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key','cf_access_client_secret','rtorrent_password']);
+const SECRET_FIELDS = new Set(['sonarr_api_key','radarr_api_key','truenas_api_key','cf_access_client_secret','rtorrent_password','ultracc_ssh_password']);
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -698,7 +695,7 @@ async function loadSettings() {
     'rclone_remote','seedbox_tv_path','seedbox_movies_path',
     'rclone_transfers','rclone_excludes',
     'rtorrent_url','rtorrent_user','rtorrent_password',
-    'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_port','sync_interval',
+    'ultracc_host','ultracc_user','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   fields.forEach(f=>{
@@ -726,7 +723,7 @@ async function saveSettings() {
     'rclone_remote','seedbox_tv_path','seedbox_movies_path',
     'rclone_transfers','rclone_excludes',
     'rtorrent_url','rtorrent_user','rtorrent_password',
-    'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_port','sync_interval',
+    'ultracc_host','ultracc_user','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   const data={};
