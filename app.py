@@ -421,6 +421,11 @@ def run_torrent_sync():
         return
     torrent_sync_state['status'] = 'syncing'
     torrent_sync_state['last_error'] = None
+    # Clear the rclone log so speed parsing only sees the current run
+    try:
+        open(RCLONE_TORRENT_LOG, 'w').close()
+    except OSError:
+        pass
     try:
         cfg = load_config()
         torrents = query_rtorrent(cfg)

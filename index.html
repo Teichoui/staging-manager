@@ -795,9 +795,10 @@ async function loadSyncStatus() {
   document.getElementById('sync-error-msg').textContent = d.last_error || '';
   const speedEl = document.getElementById('sync-speed');
   if (speedEl) {
-    if (d.speed && d.progress) speedEl.textContent = d.speed + ' (' + d.progress + ')';
+    if (s !== 'syncing') speedEl.textContent = '—';
+    else if (d.speed && d.progress) speedEl.textContent = d.speed + ' (' + d.progress + ')';
     else if (d.speed) speedEl.textContent = d.speed;
-    else speedEl.textContent = s === 'syncing' ? '…' : '—';
+    else speedEl.textContent = '…';
   }
   const sel = document.getElementById('sync-interval-select');
   if (sel && d.interval) sel.value = String(d.interval);
