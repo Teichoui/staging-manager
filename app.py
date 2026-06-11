@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "lockout_minutes": 15,
     "ultracc_host": "",
     "ultracc_user": "",
+    "ultracc_ssh_key": "/config/ultracc_id",
     "ultracc_ssh_password": "",
     "ultracc_ssh_port": 22,
     "rtorrent_url": "",
@@ -443,23 +444,29 @@ def run_torrent_sync():
 
                 host = cfg.get('ultracc_host', '').strip()
                 user = cfg.get('ultracc_user', '').strip()
-                password = cfg.get('ultracc_ssh_password', '').strip()
                 port = cfg.get('ultracc_ssh_port', 22)
+                key_file = cfg.get('ultracc_ssh_key', '').strip()
+                password = cfg.get('ultracc_ssh_password', '').strip()
                 remote_path = t['base_path']
 
-                if not host or not user or not password:
-                    logger.warning('torrent sync: ultracc host/user/password not configured')
+                if not host or not user:
+                    logger.warning('torrent sync: ultracc host/user not configured')
                     break
 
-                # Obscure password for rclone SFTP inline remote
-                obs = subprocess.run([RCLONE_BIN, 'obscure', password],
-                                     capture_output=True, text=True)  # nosec B603
-                if obs.returncode != 0:
-                    logger.warning('torrent sync: rclone obscure failed')
+                # Prefer key auth; fall back to password auth
+                use_key = key_file and os.path.exists(key_file)
+                if use_key:
+                    sftp_src = f':sftp,host={host},user={user},port={port},key_file={key_file}:{remote_path}'
+                elif password:
+                    obs = subprocess.run([RCLONE_BIN, 'obscure', password],
+                                         capture_output=True, text=True)  # nosec B603
+                    if obs.returncode != 0:
+                        logger.warning('torrent sync: rclone obscure failed')
+                        break
+                    sftp_src = f':sftp,host={host},user={user},port={port},pass={obs.stdout.strip()}:{remote_path}'
+                else:
+                    logger.warning('torrent sync: no SSH key or password configured')
                     break
-                obscured_pass = obs.stdout.strip()
-
-                sftp_src = f':sftp,host={host},user={user},port={port},pass={obscured_pass}:{remote_path}'
                 cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
