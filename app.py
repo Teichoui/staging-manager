@@ -148,7 +148,9 @@ def validate_service_url(url, field_name):
     raise ValueError(f'{field_name} host is not allowed')
 
 def validate_username(username):
-    username = str(username or '').strip()
+    if not isinstance(username, str):
+        raise ValueError('Username must be a string')
+    username = username.strip()
     if not username or len(username) > 64:
         raise ValueError('Username must be 1-64 characters')
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in username):
@@ -549,11 +551,17 @@ def login():
     if is_locked(ip):
         cfg = load_config()
         return jsonify({'success': False, 'error': f"Too many attempts. Try again in {cfg['lockout_minutes']} minutes."}), 429
-    data = request.json or {}
+    data = request.json if isinstance(request.json, dict) else {}
+    username = data.get('username', '')
+    password = data.get('password', '')
+    if not isinstance(username, str) or not isinstance(password, str):
+        failed_attempts[ip].append(time.time())
+        logger.warning('login failure ip=%s username=%s', ip, str(username)[:64])
+        return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
     cfg = load_config()
-    u_ok = secrets.compare_digest(data.get('username',''), cfg['username'])
+    u_ok = secrets.compare_digest(username, cfg['username'])
     try:
-        p_ok = bcrypt.checkpw(data.get('password','').encode(), cfg['password_hash'].encode())
+        p_ok = bcrypt.checkpw(password.encode(), cfg['password_hash'].encode())
     except:
         p_ok = False
     if u_ok and p_ok:
@@ -920,9 +928,19 @@ def rescan_series():
     if not is_authenticated():
         return jsonify({'error': 'Unauthorized'}), 401
     cfg = load_config()
-    data = request.json or {}
+    data = request.json if isinstance(request.json, dict) else {}
     app_type = data.get('app', 'sonarr')
-    series_id = data.get('id')
+    if app_type not in ('sonarr', 'radarr'):
+        return jsonify({'error': 'Invalid app'}), 400
+    raw_id = data.get('id')
+    if isinstance(raw_id, bool):
+        return jsonify({'error': 'id must be a positive integer'}), 400
+    try:
+        series_id = int(raw_id)
+        if series_id <= 0:
+            raise ValueError('id must be positive')
+    except (TypeError, ValueError):
+        return jsonify({'error': 'id must be a positive integer'}), 400
     try:
         if app_type == 'sonarr':
             url = f"{validate_service_url(cfg['sonarr_url'], 'sonarr_url')}/api/v3/command"
