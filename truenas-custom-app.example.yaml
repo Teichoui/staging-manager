@@ -13,7 +13,7 @@ services:
       # STAGING_MANAGER_SETUP_TOKEN: "change-me-before-first-run"
       STAGING_MANAGER_CONTAINER_STAGING_ROOT: "/media/staging"
       STAGING_MANAGER_TRUENAS_MEDIA_ROOT: "/mnt/tank/Media"
-      STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT: "/downloads/Done3"
+      STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT: "/home/teichou/downloads/rtorrent"
       STAGING_MANAGER_ALLOWED_HOSTS: "host.docker.internal,localhost,127.0.0.1,::1,truenas,truenas.teichou.net"
       STAGING_MANAGER_RCLONE_BIN: "/usr/bin/rclone"
       RCLONE_CONFIG: /config/rclone/rclone.conf

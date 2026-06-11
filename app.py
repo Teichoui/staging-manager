@@ -469,6 +469,7 @@ def run_torrent_sync():
                     break
                 cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
+                       '--stats', '5s', '--stats-log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
                 for pattern in cfg.get('rclone_excludes', []):
                     cmd.extend(['--exclude', pattern])
@@ -1045,6 +1046,24 @@ def test_connection():
         logger.warning('connection test failed service=%s error=%s', service, e)
         return jsonify({'success': False, 'error': 'Connection test failed'})
 
+def parse_rclone_speed():
+    """Return (speed_str, progress_str) by scanning the tail of the rclone torrent log."""
+    try:
+        if not os.path.exists(RCLONE_TORRENT_LOG):
+            return None, None
+        with open(RCLONE_TORRENT_LOG) as f:
+            lines = f.readlines()[-30:]
+        for line in reversed(lines):
+            m = re.search(
+                r'Transferred:.*?,\s*(\d+)%,\s*([\d.]+\s*\w+B/s)',
+                line
+            )
+            if m:
+                return m.group(2), m.group(1) + '%'
+    except Exception:
+        pass
+    return None, None
+
 # ── Torrent Sync API ──────────────────────────────────────────────────────────
 @app.route('/api/torrent-sync/status')
 @limiter.limit("30 per minute")
@@ -1055,6 +1074,9 @@ def torrent_sync_status():
     next_run = None
     if job and job.next_run_time:
         next_run = job.next_run_time.timestamp()
+    speed, progress = (None, None)
+    if torrent_sync_state['status'] == 'syncing':
+        speed, progress = parse_rclone_speed()
     return jsonify({
         'status': torrent_sync_state['status'],
         'last_sync': torrent_sync_state['last_sync'],
@@ -1062,6 +1084,8 @@ def torrent_sync_status():
         'active_torrent': torrent_sync_state['active_torrent'],
         'next_sync': next_run,
         'interval': load_config().get('sync_interval', 5),
+        'speed': speed,
+        'progress': progress,
     })
 
 @app.route('/api/torrent-sync/now', methods=['POST'])

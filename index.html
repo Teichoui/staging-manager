@@ -208,6 +208,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <div class="stat"><div class="stat-label">Last Sync</div><div class="stat-value" id="sync-last" style="font-size:.9rem">—</div></div>
     <div class="stat"><div class="stat-label">Next Sync</div><div class="stat-value" id="sync-next" style="font-size:.9rem">—</div></div>
     <div class="stat"><div class="stat-label">Active</div><div class="stat-value" id="sync-active" style="font-size:.75rem;word-break:break-all">—</div></div>
+    <div class="stat"><div class="stat-label">Speed</div><div class="stat-value" id="sync-speed" style="font-size:.9rem">—</div></div>
   </div>
 
   <!-- Interval + error -->
@@ -768,7 +769,14 @@ async function loadSync() {
   await loadSyncHistory();
   await loadSyncLog();
   if (syncPollTimer) clearInterval(syncPollTimer);
-  syncPollTimer = setInterval(()=>{ if(currentTab==='sync') loadSyncStatus(); }, 10000);
+  syncPollTimer = setInterval(async ()=>{
+    if(currentTab!=='sync') return;
+    const prev = document.getElementById('sync-status-val')?.textContent;
+    await loadSyncStatus();
+    const cur = document.getElementById('sync-status-val')?.textContent;
+    // Refresh history when a sync just finished
+    if (prev === 'syncing' && cur !== 'syncing') { loadSyncHistory(); loadSyncLog(); }
+  }, 6000);
 }
 
 async function loadSyncStatus() {
@@ -785,6 +793,12 @@ async function loadSyncStatus() {
     d.next_sync ? new Date(d.next_sync*1000).toLocaleTimeString() : '—';
   document.getElementById('sync-active').textContent = d.active_torrent || '—';
   document.getElementById('sync-error-msg').textContent = d.last_error || '';
+  const speedEl = document.getElementById('sync-speed');
+  if (speedEl) {
+    if (d.speed && d.progress) speedEl.textContent = d.speed + ' (' + d.progress + ')';
+    else if (d.speed) speedEl.textContent = d.speed;
+    else speedEl.textContent = s === 'syncing' ? '…' : '—';
+  }
   const sel = document.getElementById('sync-interval-select');
   if (sel && d.interval) sel.value = String(d.interval);
   const btn = document.getElementById('sync-now-btn');
