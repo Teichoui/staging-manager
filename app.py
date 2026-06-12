@@ -468,10 +468,16 @@ def run_torrent_sync():
                 else:
                     logger.warning('torrent sync: no SSH key or password configured')
                     break
+                # --sftp-disable-hashcheck: skip md5sum/sha1sum discovery on the remote
+                # --sftp-shell-type unix:   pre-set shell type so rclone doesn't probe
+                # Both prevent rclone from trying to cache results to the read-only
+                # /config/rclone volume, eliminating the config-save error spam.
+                sftp_flags = ['--sftp-disable-hashcheck', '--sftp-shell-type', 'unix']
                 cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
+                cmd.extend(sftp_flags)
                 for pattern in cfg.get('rclone_excludes', []):
                     cmd.extend(['--exclude', pattern])
 
@@ -486,6 +492,7 @@ def run_torrent_sync():
                                  '--size-only',
                                  '--log-file', RCLONE_TORRENT_LOG,
                                  '--log-level', 'INFO']
+                    check_cmd.extend(sftp_flags)
                     check = subprocess.run(  # nosec B603
                         check_cmd, capture_output=True, text=True, timeout=300)
                     if check.returncode == 0:
