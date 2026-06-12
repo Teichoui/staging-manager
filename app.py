@@ -479,14 +479,16 @@ def run_torrent_sync():
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
 
                 if result.returncode == 0:
-                    # rclone exits 0 even when nothing was transferred (empty source,
-                    # missing remote path, all-excluded files). Verify files arrived.
-                    try:
-                        has_files = os.path.isdir(local_path) and \
-                                    bool(next(os.scandir(local_path), None))
-                    except OSError:
-                        has_files = False
-                    if has_files:
+                    # rclone exits 0 even when nothing was transferred (missing remote
+                    # path, empty source, config errors). Run a size-only check to
+                    # confirm every file arrived intact before marking as done.
+                    check_cmd = [RCLONE_BIN, 'check', sftp_src, local_path,
+                                 '--size-only',
+                                 '--log-file', RCLONE_TORRENT_LOG,
+                                 '--log-level', 'INFO']
+                    check = subprocess.run(  # nosec B603
+                        check_cmd, capture_output=True, text=True, timeout=300)
+                    if check.returncode == 0:
                         conn.execute(
                             'INSERT OR IGNORE INTO synced_torrents '
                             '(torrent_hash, torrent_name, remote_path, local_path, category) '
@@ -494,12 +496,11 @@ def run_torrent_sync():
                             (t['hash'], t['name'], remote_path, local_path, category)
                         )
                         conn.commit()
-                        logger.info('torrent sync success: %s', t['name'])
+                        logger.info('torrent sync success (verified): %s', t['name'])
                     else:
                         logger.warning(
-                            'torrent sync: rclone exited 0 but no files at destination '
-                            '— will retry next cycle: name=%s local=%s',
-                            t['name'], local_path)
+                            'torrent sync: size check failed after copy '
+                            '— will retry next cycle: name=%s', t['name'])
                 else:
                     # Log rclone log tail since --log-file means stderr is usually empty
                     rclone_tail = ''
