@@ -479,17 +479,38 @@ def run_torrent_sync():
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
 
                 if result.returncode == 0:
-                    conn.execute(
-                        'INSERT OR IGNORE INTO synced_torrents '
-                        '(torrent_hash, torrent_name, remote_path, local_path, category) '
-                        'VALUES (?,?,?,?,?)',
-                        (t['hash'], t['name'], remote_path, local_path, category)
-                    )
-                    conn.commit()
-                    logger.info('torrent sync success: %s', t['name'])
+                    # rclone exits 0 even when nothing was transferred (empty source,
+                    # missing remote path, all-excluded files). Verify files arrived.
+                    try:
+                        has_files = os.path.isdir(local_path) and \
+                                    bool(next(os.scandir(local_path), None))
+                    except OSError:
+                        has_files = False
+                    if has_files:
+                        conn.execute(
+                            'INSERT OR IGNORE INTO synced_torrents '
+                            '(torrent_hash, torrent_name, remote_path, local_path, category) '
+                            'VALUES (?,?,?,?,?)',
+                            (t['hash'], t['name'], remote_path, local_path, category)
+                        )
+                        conn.commit()
+                        logger.info('torrent sync success: %s', t['name'])
+                    else:
+                        logger.warning(
+                            'torrent sync: rclone exited 0 but no files at destination '
+                            '— will retry next cycle: name=%s local=%s',
+                            t['name'], local_path)
                 else:
-                    logger.warning('torrent sync failed: name=%s stderr=%s',
-                                   t['name'], result.stderr[:500])
+                    # Log rclone log tail since --log-file means stderr is usually empty
+                    rclone_tail = ''
+                    try:
+                        with open(RCLONE_TORRENT_LOG) as lf:
+                            rclone_tail = ''.join(lf.readlines()[-10:])
+                    except OSError:
+                        pass
+                    logger.warning(
+                        'torrent sync failed: name=%s returncode=%d log=%s',
+                        t['name'], result.returncode, rclone_tail[:500])
 
         torrent_sync_state['last_sync'] = time.time()
         torrent_sync_state['status'] = 'idle'
