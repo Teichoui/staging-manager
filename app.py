@@ -470,10 +470,16 @@ def run_torrent_sync():
                 else:
                     logger.warning('torrent sync: no SSH key or password configured')
                     break
+                # --sftp-disable-hashcheck: skip md5sum/sha1sum discovery on the remote
+                # --sftp-shell-type unix:   pre-set shell type so rclone doesn't probe
+                # Both prevent rclone from trying to cache results to the read-only
+                # /config/rclone volume, eliminating the config-save error spam.
+                sftp_flags = ['--sftp-disable-hashcheck', '--sftp-shell-type', 'unix']
                 cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
+                cmd.extend(sftp_flags)
                 for pattern in cfg.get('rclone_excludes', []):
                     cmd.extend(['--exclude', pattern])
 
@@ -481,17 +487,56 @@ def run_torrent_sync():
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
 
                 if result.returncode == 0:
-                    conn.execute(
-                        'INSERT OR IGNORE INTO synced_torrents '
-                        '(torrent_hash, torrent_name, remote_path, local_path, category) '
-                        'VALUES (?,?,?,?,?)',
-                        (t['hash'], t['name'], remote_path, local_path, category)
-                    )
-                    conn.commit()
-                    logger.info('torrent sync success: %s', t['name'])
+                    # rclone exits 0 even when nothing was transferred (missing remote
+                    # path, empty source, config errors). Run a size-only check to
+                    # confirm every file arrived intact before marking as done.
+                    check_cmd = [RCLONE_BIN, 'check', sftp_src, local_path,
+                                 '--size-only', '--one-way',
+                                 '--log-file', RCLONE_TORRENT_LOG,
+                                 '--log-level', 'INFO']
+                    check_cmd.extend(sftp_flags)
+                    for pattern in cfg.get('rclone_excludes', []):
+                        check_cmd.extend(['--exclude', pattern])
+                    check = subprocess.run(  # nosec B603
+                        check_cmd, capture_output=True, text=True, timeout=300)
+                    if check.returncode == 0:
+                        has_video = False
+                        try:
+                            for _, _, files in os.walk(local_path):
+                                if any(os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
+                                       for f in files):
+                                    has_video = True
+                                    break
+                        except OSError:
+                            pass
+                        if has_video:
+                            conn.execute(
+                                'INSERT OR IGNORE INTO synced_torrents '
+                                '(torrent_hash, torrent_name, remote_path, local_path, category) '
+                                'VALUES (?,?,?,?,?)',
+                                (t['hash'], t['name'], remote_path, local_path, category)
+                            )
+                            conn.commit()
+                            logger.info('torrent sync success (verified): %s', t['name'])
+                        else:
+                            logger.warning(
+                                'torrent sync: no video files after copy '
+                                '— will retry next cycle: name=%s', t['name'])
+                    else:
+                        logger.warning(
+                            'torrent sync: size check failed after copy '
+                            '— will retry next cycle: name=%s', t['name'])
                 else:
-                    logger.warning('torrent sync failed: name=%s stderr=%s',
-                                   t['name'], result.stderr[:500])
+                    # Log rclone log tail since --log-file means stderr is usually empty
+                    rclone_tail = ''
+                    try:
+                        with open(RCLONE_TORRENT_LOG) as lf:
+                            rclone_tail = ''.join(lf.readlines()[-10:])
+                    except OSError:
+                        pass
+                    logger.warning(
+                        'torrent sync failed: name=%s returncode=%d log=%s',
+                        t['name'], result.returncode, rclone_tail[:500])
 
         torrent_sync_state['last_sync'] = time.time()
         torrent_sync_state['status'] = 'idle'

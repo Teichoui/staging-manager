@@ -20,6 +20,6 @@ services:
     volumes:
       - /mnt/tank/apps/staging-manager:/config
       - /mnt/tank/Media:/media
-      - /mnt/tank/apps/rclone:/config/rclone:ro
+      - /mnt/tank/apps/rclone:/config/rclone
     extra_hosts:
       - "host.docker.internal:host-gateway"
