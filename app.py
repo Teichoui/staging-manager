@@ -493,6 +493,8 @@ def run_torrent_sync():
                                  '--log-file', RCLONE_TORRENT_LOG,
                                  '--log-level', 'INFO']
                     check_cmd.extend(sftp_flags)
+                    for pattern in cfg.get('rclone_excludes', []):
+                        check_cmd.extend(['--exclude', pattern])
                     check = subprocess.run(  # nosec B603
                         check_cmd, capture_output=True, text=True, timeout=300)
                     if check.returncode == 0:
