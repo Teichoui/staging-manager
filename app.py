@@ -489,7 +489,7 @@ def run_torrent_sync():
                     # path, empty source, config errors). Run a size-only check to
                     # confirm every file arrived intact before marking as done.
                     check_cmd = [RCLONE_BIN, 'check', sftp_src, local_path,
-                                 '--size-only',
+                                 '--size-only', '--one-way',
                                  '--log-file', RCLONE_TORRENT_LOG,
                                  '--log-level', 'INFO']
                     check_cmd.extend(sftp_flags)
@@ -498,14 +498,28 @@ def run_torrent_sync():
                     check = subprocess.run(  # nosec B603
                         check_cmd, capture_output=True, text=True, timeout=300)
                     if check.returncode == 0:
-                        conn.execute(
-                            'INSERT OR IGNORE INTO synced_torrents '
-                            '(torrent_hash, torrent_name, remote_path, local_path, category) '
-                            'VALUES (?,?,?,?,?)',
-                            (t['hash'], t['name'], remote_path, local_path, category)
-                        )
-                        conn.commit()
-                        logger.info('torrent sync success (verified): %s', t['name'])
+                        has_video = False
+                        try:
+                            for _, _, files in os.walk(local_path):
+                                if any(os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
+                                       for f in files):
+                                    has_video = True
+                                    break
+                        except OSError:
+                            pass
+                        if has_video:
+                            conn.execute(
+                                'INSERT OR IGNORE INTO synced_torrents '
+                                '(torrent_hash, torrent_name, remote_path, local_path, category) '
+                                'VALUES (?,?,?,?,?)',
+                                (t['hash'], t['name'], remote_path, local_path, category)
+                            )
+                            conn.commit()
+                            logger.info('torrent sync success (verified): %s', t['name'])
+                        else:
+                            logger.warning(
+                                'torrent sync: no video files after copy '
+                                '— will retry next cycle: name=%s', t['name'])
                     else:
                         logger.warning(
                             'torrent sync: size check failed after copy '
