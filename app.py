@@ -474,7 +474,8 @@ def run_torrent_sync():
                 # Use a writable cache config inside /config so rclone can persist
                 # SFTP discoveries (shell type, hash commands) without needing the
                 # rclone.conf volume to be writable.
-                sftp_flags = ['--config', RCLONE_SFTP_CACHE, '--sftp-shell-type', 'unix']
+                sftp_flags = ['--config', RCLONE_SFTP_CACHE,
+                             '--sftp-shell-type', 'unix', '--sftp-disable-hashcheck']
                 cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
