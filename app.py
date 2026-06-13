@@ -1153,7 +1153,10 @@ def torrent_sync_import_existing():
 
     def has_files(path):
         try:
-            return os.path.isdir(path) and bool(next(os.scandir(path), None))
+            if not os.path.isdir(path):
+                return False
+            with os.scandir(path) as it:
+                return bool(next(it, None))
         except OSError:
             return False
 
@@ -1168,10 +1171,11 @@ def torrent_sync_import_existing():
         """Look for a folder in library_path that matches the show/movie name."""
         show = show_name_from_torrent(torrent_name).lower()
         try:
-            for entry in os.scandir(library_path):
-                if entry.is_dir() and entry.name.lower() == show:
-                    if has_files(entry.path):
-                        return entry.path
+            with os.scandir(library_path) as it:
+                for entry in it:
+                    if entry.is_dir() and entry.name.lower() == show:
+                        if has_files(entry.path):
+                            return entry.path
         except OSError:
             pass
         return None
