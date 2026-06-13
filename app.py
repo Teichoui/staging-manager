@@ -1203,15 +1203,18 @@ def torrent_sync_import_existing():
                 found_path = find_in_library(library_base, t['name'])
 
             if found_path:
-                conn.execute(
+                cursor = conn.execute(
                     'INSERT OR IGNORE INTO synced_torrents '
                     '(torrent_hash, torrent_name, remote_path, local_path, category, status) '
                     'VALUES (?,?,?,?,?,?)',
                     (t['hash'], t['name'], t['base_path'], found_path, category, 'imported')
                 )
-                conn.commit()
-                logger.info('import-existing: marked done name=%s path=%s', t['name'], found_path)
-                counts['imported'] += 1
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    logger.info('import-existing: marked done name=%s path=%s', t['name'], found_path)
+                    counts['imported'] += 1
+                else:
+                    counts['already_in_db'] += 1
             else:
                 counts['not_found'] += 1
                 logger.info('import-existing: not found locally, will sync: %s', t['name'])

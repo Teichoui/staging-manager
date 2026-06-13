@@ -810,13 +810,18 @@ async function importExisting() {
   const btn = document.getElementById('import-existing-btn');
   btn.disabled = true;
   toast('Scanning rTorrent and local library...', 'info');
-  const res = await postJson('/api/torrent-sync/import-existing', {});
-  btn.disabled = false;
-  if (handle401(res)) return;
-  const d = await res.json();
-  if (d.error) { toast('✗ ' + d.error, 'error'); return; }
-  toast(`✓ Checked ${d.checked} torrents — ${d.imported} marked done, ${d.not_found} queued for sync`, 'success');
-  loadSyncHistory();
+  try {
+    const res = await postJson('/api/torrent-sync/import-existing', {});
+    if (handle401(res)) return;
+    const d = await res.json();
+    if (d.error) { toast('✗ ' + d.error, 'error'); return; }
+    toast(`✓ Checked ${d.checked} torrents — ${d.imported} marked done, ${d.not_found} queued for sync`, 'success');
+    loadSyncHistory();
+  } catch(e) {
+    toast('✗ Import failed: connection error', 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function syncNow() {
