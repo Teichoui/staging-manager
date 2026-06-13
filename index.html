@@ -198,6 +198,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
   <div class="app-header">
     <h2>Torrent Sync</h2>
     <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+      <button class="btn btn-action" style="font-size:.7rem" onclick="importExisting()" id="import-existing-btn" title="Scan rTorrent for torrents already on disk and mark them done">📥 Import Existing</button>
       <button class="btn btn-action" style="font-size:.7rem" onclick="syncNow()" id="sync-now-btn">⚡ Sync Now</button>
     </div>
   </div>
@@ -803,6 +804,19 @@ async function loadSyncStatus() {
   if (sel && d.interval) sel.value = String(d.interval);
   const btn = document.getElementById('sync-now-btn');
   if (btn) btn.disabled = s === 'syncing';
+}
+
+async function importExisting() {
+  const btn = document.getElementById('import-existing-btn');
+  btn.disabled = true;
+  toast('Scanning rTorrent and local library...', 'info');
+  const res = await postJson('/api/torrent-sync/import-existing', {});
+  btn.disabled = false;
+  if (handle401(res)) return;
+  const d = await res.json();
+  if (d.error) { toast('✗ ' + d.error, 'error'); return; }
+  toast(`✓ Checked ${d.checked} torrents — ${d.imported} marked done, ${d.not_found} queued for sync`, 'success');
+  loadSyncHistory();
 }
 
 async function syncNow() {

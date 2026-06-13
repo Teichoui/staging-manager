@@ -1137,6 +1137,83 @@ def torrent_sync_history():
         logger.exception('torrent sync history error')
         return public_error('Could not read history')
 
+@app.route('/api/torrent-sync/import-existing', methods=['POST'])
+@limiter.limit("5 per minute")
+def torrent_sync_import_existing():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    cfg = load_config()
+    try:
+        torrents = query_rtorrent(cfg)
+    except Exception as e:
+        logger.warning('import-existing: rTorrent query failed: %s', e)
+        return jsonify({'error': 'rTorrent query failed'}), 500
+
+    counts = {'checked': 0, 'already_in_db': 0, 'imported': 0, 'not_found': 0}
+
+    def has_files(path):
+        try:
+            return os.path.isdir(path) and bool(next(os.scandir(path), None))
+        except OSError:
+            return False
+
+    def show_name_from_torrent(name):
+        """Extract show/movie title from a release name like Show.Name.S01.1080p..."""
+        # Stop at season marker (S01, S01E01), year (2024), or resolution (1080p)
+        m = re.search(r'[. _](?:S\d{2}|(?:19|20)\d{2}|(?:480|720|1080|2160)[pi])', name, re.IGNORECASE)
+        title = name[:m.start()] if m else name
+        return title.replace('.', ' ').replace('_', ' ').strip()
+
+    def find_in_library(library_path, torrent_name):
+        """Look for a folder in library_path that matches the show/movie name."""
+        show = show_name_from_torrent(torrent_name).lower()
+        try:
+            for entry in os.scandir(library_path):
+                if entry.is_dir() and entry.name.lower() == show:
+                    if has_files(entry.path):
+                        return entry.path
+        except OSError:
+            pass
+        return None
+
+    with sqlite3.connect(DB_PATH) as conn:
+        for t in torrents:
+            counts['checked'] += 1
+            already = conn.execute(
+                'SELECT id FROM synced_torrents WHERE torrent_hash=?', (t['hash'],)
+            ).fetchone()
+            if already:
+                counts['already_in_db'] += 1
+                continue
+
+            category = 'movies' if 'radarr' in t['label'] else 'tv'
+            staging_base = cfg['staging_movies'] if category == 'movies' else cfg['staging_tv']
+            library_base = cfg['movies_library'] if category == 'movies' else cfg['tv_library']
+
+            staging_path = f"{staging_base}/{t['name']}"
+            found_path = None
+
+            if has_files(staging_path):
+                found_path = staging_path
+            else:
+                found_path = find_in_library(library_base, t['name'])
+
+            if found_path:
+                conn.execute(
+                    'INSERT OR IGNORE INTO synced_torrents '
+                    '(torrent_hash, torrent_name, remote_path, local_path, category, status) '
+                    'VALUES (?,?,?,?,?,?)',
+                    (t['hash'], t['name'], t['base_path'], found_path, category, 'imported')
+                )
+                conn.commit()
+                logger.info('import-existing: marked done name=%s path=%s', t['name'], found_path)
+                counts['imported'] += 1
+            else:
+                counts['not_found'] += 1
+                logger.info('import-existing: not found locally, will sync: %s', t['name'])
+
+    return jsonify(counts)
+
 @app.route('/api/torrent-sync/log')
 @limiter.limit("20 per minute")
 def torrent_sync_log():
