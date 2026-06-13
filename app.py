@@ -1200,6 +1200,124 @@ def torrent_sync_history():
         logger.exception('torrent sync history error')
         return public_error('Could not read history')
 
+@app.route('/api/torrent-sync/import-existing', methods=['POST'])
+@limiter.limit("5 per minute")
+def torrent_sync_import_existing():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    if not torrent_sync_lock.acquire(blocking=False):
+        return jsonify({'error': 'A sync is currently running — try again when it finishes'}), 409
+    try:
+        cfg = load_config()
+        try:
+            torrents = query_rtorrent(cfg)
+        except Exception as e:
+            logger.warning('import-existing: rTorrent query failed: %s', e)
+            return jsonify({'error': 'rTorrent query failed'}), 500
+
+        counts = {'checked': 0, 'already_in_db': 0, 'imported': 0, 'not_found': 0}
+
+        def has_video_recursive(path):
+            try:
+                for _, _, files in os.walk(path):
+                    if any(os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS for f in files):
+                        return True
+            except OSError:
+                pass
+            return False
+
+        def show_name_from_torrent(name):
+            m = re.search(r'[. _](?:S\d{2}|(?:19|20)\d{2}|(?:480|720|1080|2160)[pi])', name, re.IGNORECASE)
+            title = name[:m.start()] if m else name
+            return title.replace('.', ' ').replace('_', ' ').strip()
+
+        def has_season(show_path, season_num):
+            """Check if a specific season's content exists inside a show folder."""
+            padded = f'{season_num:02d}'
+            season_dirs = {f'season {season_num}', f'season {padded}', f's{padded}'}
+            try:
+                with os.scandir(show_path) as it:
+                    for entry in it:
+                        name_lower = entry.name.lower()
+                        if entry.is_dir() and name_lower in season_dirs:
+                            return has_video_recursive(entry.path)
+                        if entry.is_file():
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            if ext in VIDEO_EXTENSIONS and re.search(
+                                    rf's{padded}e\d{{2}}', name_lower):
+                                return True
+            except OSError:
+                pass
+            return False
+
+        def find_in_library(library_path, torrent_name, category):
+            show = show_name_from_torrent(torrent_name).lower()
+            year_m = re.search(r'[. _]((?:19|20)\d{2})[. _]', torrent_name)
+            show_with_year = f'{show} ({year_m.group(1)})' if year_m else None
+            season_m = re.search(r'[. _]S(\d{2})', torrent_name, re.IGNORECASE)
+            season_num = int(season_m.group(1)) if season_m else None
+            try:
+                with os.scandir(library_path) as it:
+                    for entry in it:
+                        if not entry.is_dir():
+                            continue
+                        folder_lower = entry.name.lower()
+                        if folder_lower != show and (
+                                not show_with_year or folder_lower != show_with_year):
+                            continue
+                        if category == 'tv' and season_num is not None:
+                            if not has_season(entry.path, season_num):
+                                continue
+                        elif not has_video_recursive(entry.path):
+                            continue
+                        return entry.path
+            except OSError:
+                pass
+            return None
+
+        with sqlite3.connect(DB_PATH) as conn:
+            for t in torrents:
+                counts['checked'] += 1
+                already = conn.execute(
+                    'SELECT id FROM synced_torrents WHERE torrent_hash=?', (t['hash'],)
+                ).fetchone()
+                if already:
+                    counts['already_in_db'] += 1
+                    continue
+
+                category = 'movies' if 'radarr' in t['label'] else 'tv'
+                staging_base = cfg['staging_movies'] if category == 'movies' else cfg['staging_tv']
+                library_base = cfg['movies_library'] if category == 'movies' else cfg['tv_library']
+
+                staging_path = f"{staging_base}/{t['name']}"
+                found_path = None
+
+                if has_video_recursive(staging_path):
+                    found_path = staging_path
+                else:
+                    found_path = find_in_library(library_base, t['name'], category)
+
+                if found_path:
+                    cursor = conn.execute(
+                        'INSERT OR IGNORE INTO synced_torrents '
+                        '(torrent_hash, torrent_name, remote_path, local_path, category, status) '
+                        'VALUES (?,?,?,?,?,?)',
+                        (t['hash'], t['name'], t['base_path'], found_path, category, 'imported')
+                    )
+                    if cursor.rowcount > 0:
+                        conn.commit()
+                        logger.info('import-existing: marked done name=%s path=%s', t['name'], found_path)
+                        counts['imported'] += 1
+                    else:
+                        counts['already_in_db'] += 1
+                else:
+                    counts['not_found'] += 1
+                    logger.info('import-existing: not found locally, will sync: %s', t['name'])
+
+        return jsonify(counts)
+    finally:
+        torrent_sync_lock.release()
+
 @app.route('/api/torrent-sync/log')
 @limiter.limit("20 per minute")
 def torrent_sync_log():
