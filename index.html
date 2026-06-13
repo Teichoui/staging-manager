@@ -815,7 +815,10 @@ async function importExisting() {
     if (handle401(res)) return;
     const d = await res.json();
     if (d.error) { toast('✗ ' + d.error, 'error'); return; }
-    toast(`✓ Checked ${d.checked} torrents — ${d.imported} marked done, ${d.not_found} queued for sync`, 'success');
+    const msg = d.imported > 0
+      ? `✓ ${d.imported} marked done, ${d.not_found} queued for sync (${d.already_in_db} already in DB)`
+      : `✓ Nothing to import — ${d.already_in_db} already in DB, ${d.not_found} queued for sync`;
+    toast(msg, d.imported > 0 ? 'success' : 'info');
     loadSyncHistory();
   } catch(e) {
     toast('✗ Import failed: connection error', 'error');
