@@ -20,6 +20,7 @@ KEY_PATH = os.path.join(BASE_DIR, 'key.pem')
 LOG_PATH = os.environ.get('STAGING_MANAGER_LOG_PATH', os.path.join(BASE_DIR, 'app.log'))
 DB_PATH = os.path.join(BASE_DIR, 'staging.db')
 RCLONE_TORRENT_LOG = os.path.join(BASE_DIR, 'rclone-torrent.log')
+RCLONE_SFTP_CACHE = os.path.join(BASE_DIR, 'rclone-sftp-cache.conf')
 APP_PORT = int(os.environ.get('STAGING_MANAGER_PORT', '7474'))
 APP_HOST = os.environ.get('STAGING_MANAGER_HOST', '127.0.0.1')
 ENABLE_HTTPS = os.environ.get('STAGING_MANAGER_HTTPS', '').lower() in ('1', 'true', 'yes')
@@ -470,11 +471,10 @@ def run_torrent_sync():
                 else:
                     logger.warning('torrent sync: no SSH key or password configured')
                     break
-                # --sftp-disable-hashcheck: skip md5sum/sha1sum discovery on the remote
-                # --sftp-shell-type unix:   pre-set shell type so rclone doesn't probe
-                # Both prevent rclone from trying to cache results to the read-only
-                # /config/rclone volume, eliminating the config-save error spam.
-                sftp_flags = ['--sftp-disable-hashcheck', '--sftp-shell-type', 'unix']
+                # Use a writable cache config inside /config so rclone can persist
+                # SFTP discoveries (shell type, hash commands) without needing the
+                # rclone.conf volume to be writable.
+                sftp_flags = ['--config', RCLONE_SFTP_CACHE, '--sftp-shell-type', 'unix']
                 cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
