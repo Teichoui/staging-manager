@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -31,6 +31,14 @@ SECURE_COOKIES = ENABLE_HTTPS if secure_cookie_env is None else secure_cookie_en
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.ts', '.m2ts'}
 RCLONE_BIN = os.environ.get('STAGING_MANAGER_RCLONE_BIN') or shutil.which('rclone') or 'rclone'
 OPENSSL_BIN = os.environ.get('STAGING_MANAGER_OPENSSL_BIN') or shutil.which('openssl') or 'openssl'
+
+def name_matches_excludes(name, patterns):
+    """Match a bare filename against rclone-style exclude globs (e.g. "**/*.rar")."""
+    for pattern in patterns:
+        basename_pattern = pattern.rsplit('/', 1)[-1]
+        if fnmatch.fnmatch(name, basename_pattern):
+            return True
+    return False
 CONTAINER_STAGING_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_STAGING_ROOT', '/media/staging')
 TRUENAS_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_TRUENAS_MEDIA_ROOT', '/mnt/tank/Media')
 SEEDBOX_ALLOWED_ROOT = os.environ.get('STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT', '/downloads/Done3')
@@ -480,14 +488,25 @@ def run_torrent_sync():
                 # Single-file torrents already have the filename baked into t['name'],
                 # so local_path is the destination file itself, not a directory to copy
                 # into — use copyto or rclone would create a wrapper dir named *.mkv.
-                copy_verb = 'copy' if t.get('is_multi_file', True) else 'copyto'
+                is_multi_file = t.get('is_multi_file', True)
+                # rclone can't apply --exclude filters to a copyto, so honor the
+                # configured skip rules ourselves: a single file that itself matches
+                # an exclude pattern (e.g. a lone .rar) should never be transferred.
+                if not is_multi_file and name_matches_excludes(t['name'], cfg.get('rclone_excludes', [])):
+                    logger.info('torrent sync: skipping excluded single file: %s', t['name'])
+                    continue
+                copy_verb = 'copy' if is_multi_file else 'copyto'
                 cmd = [RCLONE_BIN, copy_verb, sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
                 cmd.extend(sftp_flags)
-                for pattern in cfg.get('rclone_excludes', []):
-                    cmd.extend(['--exclude', pattern])
+                # rclone refuses filters on a single-file source/copyto ("can't limit
+                # to single files when using filters") — excludes only make sense for
+                # multi-file releases (skipping .rar/.r00 archive parts) anyway.
+                if is_multi_file:
+                    for pattern in cfg.get('rclone_excludes', []):
+                        cmd.extend(['--exclude', pattern])
 
                 logger.info('torrent sync copying: name=%s → %s', t['name'], local_path)
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
