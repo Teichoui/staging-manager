@@ -761,14 +761,18 @@ def scan_staging(base, category):
     try:
         for name in sorted(os.listdir(base)):
             fp = os.path.join(base, name)
-            if not os.path.isdir(fp):
+            is_file = os.path.isfile(fp)
+            if not is_file and not os.path.isdir(fp):
                 continue
-            try:
-                files = os.listdir(fp)
-            except:
-                files = []
-            folders.append({'name': name, 'category': category,
-                            'has_video': has_video(fp), 'file_count': len(files)})
+            if is_file:
+                file_count = 1
+            else:
+                try:
+                    file_count = len(os.listdir(fp))
+                except:
+                    file_count = 0
+            folders.append({'name': name, 'category': category, 'is_file': is_file,
+                            'has_video': has_video(fp), 'file_count': file_count})
     except Exception as e:
         logger.debug('staging scan skipped base=%s error=%s', base, e)
     return folders
@@ -813,8 +817,18 @@ def sync_folder():
         remote = f"{remote_name}:{seedbox_tv_path}/{name}"
     else:
         remote = f"{remote_name}:{seedbox_movies_path}/{name}"
-    local  = f"{staging_base}/{name}/"
-    cmd = [RCLONE_BIN, 'copy', remote, local]
+    existing = f"{staging_base}/{name}"
+    # A single-file item already on disk as a file (or, if missing entirely, a
+    # name that looks like a video filename) needs copyto — rclone copy always
+    # treats its destination as a directory to copy into.
+    single_file = os.path.isfile(existing) or (
+        not os.path.exists(existing) and os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS)
+    if single_file:
+        local = existing
+        cmd = [RCLONE_BIN, 'copyto', remote, local]
+    else:
+        local = f"{existing}/"
+        cmd = [RCLONE_BIN, 'copy', remote, local]
     for pattern in cfg.get('rclone_excludes', []):
         cmd.extend(['--exclude', pattern])
     cmd.extend(['--transfers', str(cfg.get('rclone_transfers', 8))])
@@ -856,8 +870,11 @@ def delete_folder():
     if not os.path.exists(full):
         return jsonify({'error': 'Not found'}), 404
     try:
-        shutil.rmtree(full)
-        logger.info('deleted staging folder category=%s path=%s', category, full)
+        if os.path.isfile(full):
+            os.remove(full)
+        else:
+            shutil.rmtree(full)
+        logger.info('deleted staging item category=%s path=%s', category, full)
         return jsonify({'success': True})
     except Exception as e:
         logger.exception('delete failed category=%s path=%s', category, full)
