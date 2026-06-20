@@ -494,18 +494,24 @@ def run_torrent_sync():
 
                 if result.returncode == 0:
                     # rclone exits 0 even when nothing was transferred (missing remote
-                    # path, empty source, config errors). Run a size-only check to
-                    # confirm every file arrived intact before marking as done.
-                    check_cmd = [RCLONE_BIN, 'check', sftp_src, local_path,
-                                 '--size-only', '--one-way',
-                                 '--log-file', RCLONE_TORRENT_LOG,
-                                 '--log-level', 'INFO']
-                    check_cmd.extend(sftp_flags)
-                    for pattern in cfg.get('rclone_excludes', []):
-                        check_cmd.extend(['--exclude', pattern])
-                    check = subprocess.run(  # nosec B603
-                        check_cmd, capture_output=True, text=True, timeout=300)
-                    if check.returncode == 0:
+                    # path, empty source, config errors). For multi-file torrents, run
+                    # a size-only check to confirm every file arrived intact. copyto
+                    # already gives a deterministic per-file result for single-file
+                    # torrents, so rclone check (a directory-comparison tool) adds no
+                    # value there — skip it and verify via has_video directly.
+                    checked_ok = True
+                    if t.get('is_multi_file', True):
+                        check_cmd = [RCLONE_BIN, 'check', sftp_src, local_path,
+                                     '--size-only', '--one-way',
+                                     '--log-file', RCLONE_TORRENT_LOG,
+                                     '--log-level', 'INFO']
+                        check_cmd.extend(sftp_flags)
+                        for pattern in cfg.get('rclone_excludes', []):
+                            check_cmd.extend(['--exclude', pattern])
+                        check = subprocess.run(  # nosec B603
+                            check_cmd, capture_output=True, text=True, timeout=300)
+                        checked_ok = check.returncode == 0
+                    if checked_ok:
                         if has_video(local_path):
                             conn.execute(
                                 'INSERT OR IGNORE INTO synced_torrents '
