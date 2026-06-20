@@ -480,14 +480,19 @@ def run_torrent_sync():
                 # Single-file torrents already have the filename baked into t['name'],
                 # so local_path is the destination file itself, not a directory to copy
                 # into — use copyto or rclone would create a wrapper dir named *.mkv.
-                copy_verb = 'copy' if t.get('is_multi_file', True) else 'copyto'
+                is_multi_file = t.get('is_multi_file', True)
+                copy_verb = 'copy' if is_multi_file else 'copyto'
                 cmd = [RCLONE_BIN, copy_verb, sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
                 cmd.extend(sftp_flags)
-                for pattern in cfg.get('rclone_excludes', []):
-                    cmd.extend(['--exclude', pattern])
+                # rclone refuses filters on a single-file source/copyto ("can't limit
+                # to single files when using filters") — excludes only make sense for
+                # multi-file releases (skipping .rar/.r00 archive parts) anyway.
+                if is_multi_file:
+                    for pattern in cfg.get('rclone_excludes', []):
+                        cmd.extend(['--exclude', pattern])
 
                 logger.info('torrent sync copying: name=%s → %s', t['name'], local_path)
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
