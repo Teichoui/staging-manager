@@ -394,16 +394,17 @@ def query_rtorrent(cfg):
     transport = xmlrpc.client.SafeTransport(context=ctx)
     client = xmlrpc.client.ServerProxy(auth_url, transport=transport)
     results = client.d.multicall2('', 'complete',
-        'd.hash=', 'd.name=', 'd.base_path=', 'd.complete=', 'd.custom1=')
+        'd.hash=', 'd.name=', 'd.base_path=', 'd.complete=', 'd.custom1=', 'd.is_multi_file=')
     completed = []
     for torrent in results:
-        hash_, name, base_path, complete, label = torrent
+        hash_, name, base_path, complete, label, is_multi_file = torrent
         if complete == 1:
             completed.append({
                 'hash': hash_,
                 'name': name,
                 'base_path': base_path,
                 'label': (label or '').lower(),
+                'is_multi_file': bool(is_multi_file),
             })
     return completed
 
@@ -476,7 +477,11 @@ def run_torrent_sync():
                 # rclone.conf volume to be writable.
                 sftp_flags = ['--config', RCLONE_SFTP_CACHE,
                              '--sftp-shell-type', 'unix', '--sftp-disable-hashcheck']
-                cmd = [RCLONE_BIN, 'copy', sftp_src, local_path,
+                # Single-file torrents already have the filename baked into t['name'],
+                # so local_path is the destination file itself, not a directory to copy
+                # into — use copyto or rclone would create a wrapper dir named *.mkv.
+                copy_verb = 'copy' if t.get('is_multi_file', True) else 'copyto'
+                cmd = [RCLONE_BIN, copy_verb, sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
                        '--transfers', str(cfg.get('rclone_transfers', 8))]
@@ -501,16 +506,7 @@ def run_torrent_sync():
                     check = subprocess.run(  # nosec B603
                         check_cmd, capture_output=True, text=True, timeout=300)
                     if check.returncode == 0:
-                        has_video = False
-                        try:
-                            for _, _, files in os.walk(local_path):
-                                if any(os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
-                                       for f in files):
-                                    has_video = True
-                                    break
-                        except OSError:
-                            pass
-                        if has_video:
+                        if has_video(local_path):
                             conn.execute(
                                 'INSERT OR IGNORE INTO synced_torrents '
                                 '(torrent_hash, torrent_name, remote_path, local_path, category) '
@@ -743,12 +739,15 @@ def save_settings():
 
 # ── Staging API ───────────────────────────────────────────────────────────────
 def has_video(path):
+    """True if path is a video file, or a directory containing one (recursively)."""
+    if os.path.isfile(path):
+        return os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS
     try:
         for _, _, files in os.walk(path):
             if any(os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS for f in files):
                 return True
         return False
-    except:
+    except OSError:
         return False
 
 def scan_staging(base, category):
@@ -1218,15 +1217,6 @@ def torrent_sync_import_existing():
 
         counts = {'checked': 0, 'already_in_db': 0, 'imported': 0, 'not_found': 0}
 
-        def has_video_recursive(path):
-            try:
-                for _, _, files in os.walk(path):
-                    if any(os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS for f in files):
-                        return True
-            except OSError:
-                pass
-            return False
-
         def show_name_from_torrent(name):
             m = re.search(r'[. _](?:S\d{2}|(?:19|20)\d{2}|(?:480|720|1080|2160)[pi])', name, re.IGNORECASE)
             title = name[:m.start()] if m else name
@@ -1241,7 +1231,7 @@ def torrent_sync_import_existing():
                     for entry in it:
                         name_lower = entry.name.lower()
                         if entry.is_dir() and name_lower in season_dirs:
-                            return has_video_recursive(entry.path)
+                            return has_video(entry.path)
                         if entry.is_file():
                             ext = os.path.splitext(entry.name)[1].lower()
                             if ext in VIDEO_EXTENSIONS and re.search(
@@ -1269,7 +1259,7 @@ def torrent_sync_import_existing():
                         if category == 'tv' and season_num is not None:
                             if not has_season(entry.path, season_num):
                                 continue
-                        elif not has_video_recursive(entry.path):
+                        elif not has_video(entry.path):
                             continue
                         return entry.path
             except OSError:
@@ -1293,7 +1283,7 @@ def torrent_sync_import_existing():
                 staging_path = f"{staging_base}/{t['name']}"
                 found_path = None
 
-                if has_video_recursive(staging_path):
+                if has_video(staging_path):
                     found_path = staging_path
                 else:
                     found_path = find_in_library(library_base, t['name'], category)
