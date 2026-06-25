@@ -170,12 +170,12 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <div class="stat"><div class="stat-label">TV Folders</div><div class="stat-value" id="s-tv">—</div></div>
     <div class="stat"><div class="stat-label">Movie Folders</div><div class="stat-value" id="s-mv">—</div></div>
     <div class="stat"><div class="stat-label">Bookshelf Items</div><div class="stat-value" id="s-bs">—</div></div>
-    <div class="stat"><div class="stat-label">Missing Video</div><div class="stat-value danger" id="s-miss">—</div></div>
+    <div class="stat"><div class="stat-label">Incomplete</div><div class="stat-value danger" id="s-miss">—</div></div>
     <div class="stat"><div class="stat-label">Ready</div><div class="stat-value success" id="s-ready">—</div></div>
   </div>
   <div class="filter-bar">
     <button class="filter-btn active" id="sf-all" onclick="setStagingFilter('all')">All</button>
-    <button class="filter-btn" id="sf-missing" onclick="setStagingFilter('missing')">Missing Video</button>
+    <button class="filter-btn" id="sf-missing" onclick="setStagingFilter('missing')">Incomplete</button>
     <button class="filter-btn" id="sf-tv" onclick="setStagingFilter('tv')">TV</button>
     <button class="filter-btn" id="sf-movies" onclick="setStagingFilter('movies')">Movies</button>
     <button class="filter-btn" id="sf-bookshelf" onclick="setStagingFilter('bookshelf')">Bookshelf</button>
@@ -406,7 +406,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-let stagingData = {tv:[], movies:[]};
+let stagingData = {tv:[], movies:[], bookshelf:[]};
 let stagingFilter = 'all';
 let seedboxCat = 'tv';
 let errorFilter = 'all';
@@ -530,7 +530,7 @@ function renderStagingSection(title, folders, cat) {
     <div class="section-header">
       <span class="section-title">${esc(title)}</span>
       <span class="badge">${folders.length} folders</span>
-      ${missing>0?`<span class="badge warn">${missing} missing video</span>`:''}
+      ${missing>0?`<span class="badge warn">${missing} incomplete</span>`:''}
     </div>
     <div class="folders">
       ${folders.length===0?'<div class="empty">Empty</div>':folders.map(f=>folderRow(f)).join('')}

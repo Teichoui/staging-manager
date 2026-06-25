@@ -945,8 +945,11 @@ def get_seedbox():
         return jsonify({'error': str(e)}), 400
     remote = f"{remote_name}:{remote_path}"
     try:
+        # No --dirs-only: single-file torrents (audiobooks/ebooks especially, but
+        # also single-episode TV/movie releases) land as root-level files, not
+        # folders, and would otherwise be invisible in the seedbox browser.
         r = subprocess.run(
-            [RCLONE_BIN, 'lsf', '--dirs-only', remote],
+            [RCLONE_BIN, 'lsf', remote],
             capture_output=True, text=True, timeout=30
         )  # nosec B603
         if r.returncode != 0:
