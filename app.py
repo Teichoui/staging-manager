@@ -62,7 +62,7 @@ DEFAULT_CONFIG = {
     "rclone_remote": "seedbox",
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
     "seedbox_movies_path": "/downloads/Done3/radarr",
-    "seedbox_bookshelf_path": "/downloads/Done3/bookshelf",
+    "seedbox_bookshelf_path": f"{SEEDBOX_ALLOWED_ROOT}/bookshelf",
     "rclone_excludes": ["**/*.rar", "**/*.r[0-9][0-9]"],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
