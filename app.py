@@ -29,6 +29,7 @@ secure_cookie_env = os.environ.get('STAGING_MANAGER_SECURE_COOKIES')
 SECURE_COOKIES = ENABLE_HTTPS if secure_cookie_env is None else secure_cookie_env.lower() in ('1', 'true', 'yes')
 
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.ts', '.m2ts'}
+BOOK_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.epub', '.mobi', '.azw3', '.pdf'}
 RCLONE_BIN = os.environ.get('STAGING_MANAGER_RCLONE_BIN') or shutil.which('rclone') or 'rclone'
 OPENSSL_BIN = os.environ.get('STAGING_MANAGER_OPENSSL_BIN') or shutil.which('openssl') or 'openssl'
 
@@ -54,12 +55,14 @@ DEFAULT_CONFIG = {
     "password_hash": "",  # nosec B105
     "staging_tv": "/media/staging/tv-sonarr",
     "staging_movies": "/media/staging/radarr",
+    "staging_bookshelf": "/media/staging/bookshelf",
     "tv_library": "/mnt/tank/Media/TV",
     "movies_library": "/mnt/tank/Media/Movies",
     "staging_root": "/mnt/tank/Media/staging",
     "rclone_remote": "seedbox",
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
     "seedbox_movies_path": "/downloads/Done3/radarr",
+    "seedbox_bookshelf_path": "/downloads/Done3/bookshelf",
     "rclone_excludes": ["**/*.rar", "**/*.r[0-9][0-9]"],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
@@ -444,10 +447,13 @@ def run_torrent_sync():
                 if already:
                     continue
 
-                # Route by rTorrent label: anything with 'radarr' → movies, else tv
+                # Route by rTorrent label: 'radarr' → movies, 'bookshelf' → bookshelf, else tv
                 if 'radarr' in t['label']:
                     category = 'movies'
                     local_base = cfg['staging_movies']
+                elif 'bookshelf' in t['label']:
+                    category = 'bookshelf'
+                    local_base = cfg['staging_bookshelf']
                 else:
                     category = 'tv'
                     local_base = cfg['staging_tv']
@@ -531,7 +537,8 @@ def run_torrent_sync():
                             check_cmd, capture_output=True, text=True, timeout=300)
                         checked_ok = check.returncode == 0
                     if checked_ok:
-                        if has_video(local_path):
+                        is_complete = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
+                        if is_complete:
                             conn.execute(
                                 'INSERT OR IGNORE INTO synced_torrents '
                                 '(torrent_hash, torrent_name, remote_path, local_path, category) '
@@ -735,6 +742,7 @@ def save_settings():
     try:
         cfg['staging_tv'] = validate_managed_path(cfg['staging_tv'], CONTAINER_STAGING_ROOT, 'staging_tv')
         cfg['staging_movies'] = validate_managed_path(cfg['staging_movies'], CONTAINER_STAGING_ROOT, 'staging_movies')
+        cfg['staging_bookshelf'] = validate_managed_path(cfg['staging_bookshelf'], CONTAINER_STAGING_ROOT, 'staging_bookshelf')
         cfg['tv_library'] = validate_managed_path(cfg['tv_library'], TRUENAS_MEDIA_ROOT, 'tv_library')
         cfg['movies_library'] = validate_managed_path(cfg['movies_library'], TRUENAS_MEDIA_ROOT, 'movies_library')
         cfg['staging_root'] = validate_managed_path(cfg['staging_root'], TRUENAS_MEDIA_ROOT, 'staging_root')
@@ -744,6 +752,7 @@ def save_settings():
         cfg['rclone_remote'] = validate_rclone_remote_name(cfg['rclone_remote'])
         cfg['seedbox_tv_path'] = validate_seedbox_path(cfg['seedbox_tv_path'], 'seedbox_tv_path')
         cfg['seedbox_movies_path'] = validate_seedbox_path(cfg['seedbox_movies_path'], 'seedbox_movies_path')
+        cfg['seedbox_bookshelf_path'] = validate_seedbox_path(cfg['seedbox_bookshelf_path'], 'seedbox_bookshelf_path')
         cfg['rtorrent_url'] = validate_external_url(cfg.get('rtorrent_url', ''), 'rtorrent_url')
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -775,7 +784,22 @@ def has_video(path):
     except OSError:
         return False
 
+def has_book(path):
+    """True if path is an audiobook/ebook file, or a directory containing one."""
+    if os.path.isfile(path):
+        return os.path.splitext(path)[1].lower() in BOOK_EXTENSIONS
+    try:
+        for _, _, files in os.walk(path):
+            if any(os.path.splitext(f)[1].lower() in BOOK_EXTENSIONS for f in files):
+                return True
+        return False
+    except OSError:
+        return False
+
 def scan_staging(base, category):
+    # "has_video" doubles as the generic ready/complete flag for every category —
+    # for bookshelf it checks audiobook/ebook extensions instead of video ones.
+    is_ready = has_book if category == 'bookshelf' else has_video
     folders = []
     try:
         for name in sorted(os.listdir(base)):
@@ -791,13 +815,13 @@ def scan_staging(base, category):
                 except:
                     file_count = 0
             folders.append({'name': name, 'category': category, 'is_file': is_file,
-                            'has_video': has_video(fp), 'file_count': file_count})
+                            'has_video': is_ready(fp), 'file_count': file_count})
     except Exception as e:
         logger.debug('staging scan skipped base=%s error=%s', base, e)
     return folders
 
 def get_staging_base(cfg, category):
-    key = 'staging_tv' if category == 'tv' else 'staging_movies'
+    key = {'tv': 'staging_tv', 'movies': 'staging_movies', 'bookshelf': 'staging_bookshelf'}[category]
     return validate_managed_path(cfg[key], CONTAINER_STAGING_ROOT, key)
 
 @app.route('/api/staging')
@@ -808,9 +832,11 @@ def get_staging():
     try:
         tv_base = get_staging_base(cfg, 'tv')
         movies_base = get_staging_base(cfg, 'movies')
+        bookshelf_base = get_staging_base(cfg, 'bookshelf')
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
-    return jsonify({'tv': scan_staging(tv_base, 'tv'), 'movies': scan_staging(movies_base, 'movies')})
+    return jsonify({'tv': scan_staging(tv_base, 'tv'), 'movies': scan_staging(movies_base, 'movies'),
+                    'bookshelf': scan_staging(bookshelf_base, 'bookshelf')})
 
 @app.route('/api/sync', methods=['POST'])
 @limiter.limit("6 per minute")
@@ -821,35 +847,36 @@ def sync_folder():
     data = request.json or {}
     name = safe_name(data.get('name',''))
     category = data.get('category','tv')
-    if not name or category not in ('tv','movies'):
+    if not name or category not in ('tv','movies','bookshelf'):
         return jsonify({'error': 'Invalid request'}), 400
+    seedbox_key = {'tv': 'seedbox_tv_path', 'movies': 'seedbox_movies_path',
+                   'bookshelf': 'seedbox_bookshelf_path'}[category]
     try:
         remote_name = validate_rclone_remote_name(cfg['rclone_remote'])
-        seedbox_tv_path = validate_seedbox_path(cfg['seedbox_tv_path'], 'seedbox_tv_path')
-        seedbox_movies_path = validate_seedbox_path(cfg['seedbox_movies_path'], 'seedbox_movies_path')
+        seedbox_path = validate_seedbox_path(cfg[seedbox_key], seedbox_key)
         staging_base = get_staging_base(cfg, category)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     if not sync_lock.acquire(blocking=False):
         return jsonify({'error': 'A sync is already running'}), 429
-    if category == 'tv':
-        remote = f"{remote_name}:{seedbox_tv_path}/{name}"
-    else:
-        remote = f"{remote_name}:{seedbox_movies_path}/{name}"
+    remote = f"{remote_name}:{seedbox_path}/{name}"
     existing = f"{staging_base}/{name}"
     # A single-file item already on disk as a file (or, if missing entirely, a
-    # name that looks like a video filename) needs copyto — rclone copy always
+    # name that looks like a media filename) needs copyto — rclone copy always
     # treats its destination as a directory to copy into.
+    name_ext = os.path.splitext(name)[1].lower()
     single_file = os.path.isfile(existing) or (
-        not os.path.exists(existing) and os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS)
+        not os.path.exists(existing) and name_ext in VIDEO_EXTENSIONS | BOOK_EXTENSIONS)
     if single_file:
         local = existing
         cmd = [RCLONE_BIN, 'copyto', remote, local]
     else:
         local = f"{existing}/"
         cmd = [RCLONE_BIN, 'copy', remote, local]
-    for pattern in cfg.get('rclone_excludes', []):
-        cmd.extend(['--exclude', pattern])
+        # rclone rejects --exclude/--include filters on a copyto single-file
+        # transfer, so only apply them for directory copies.
+        for pattern in cfg.get('rclone_excludes', []):
+            cmd.extend(['--exclude', pattern])
     cmd.extend(['--transfers', str(cfg.get('rclone_transfers', 8))])
     try:
         logger.info('sync start category=%s name=%s remote=%s local=%s', category, name, remote, local)
@@ -877,7 +904,7 @@ def delete_folder():
     data = request.json or {}
     name = safe_name(data.get('name',''))
     category = data.get('category','tv')
-    if not name or category not in ('tv','movies'):
+    if not name or category not in ('tv','movies','bookshelf'):
         return jsonify({'error': 'Invalid request'}), 400
     try:
         base = get_staging_base(cfg, category)
@@ -907,14 +934,13 @@ def get_seedbox():
         return jsonify({'error': 'Unauthorized'}), 401
     cfg = load_config()
     category = request.args.get('category', 'tv')
-    if category not in ('tv', 'movies'):
+    if category not in ('tv', 'movies', 'bookshelf'):
         return jsonify({'error': 'Invalid category'}), 400
+    seedbox_key = {'tv': 'seedbox_tv_path', 'movies': 'seedbox_movies_path',
+                   'bookshelf': 'seedbox_bookshelf_path'}[category]
     try:
         remote_name = validate_rclone_remote_name(cfg['rclone_remote'])
-        remote_path = validate_seedbox_path(
-            cfg['seedbox_tv_path'] if category == 'tv' else cfg['seedbox_movies_path'],
-            'seedbox_path'
-        )
+        remote_path = validate_seedbox_path(cfg[seedbox_key], 'seedbox_path')
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     remote = f"{remote_name}:{remote_path}"
@@ -1318,16 +1344,30 @@ def torrent_sync_import_existing():
                     counts['already_in_db'] += 1
                     continue
 
-                category = 'movies' if 'radarr' in t['label'] else 'tv'
-                staging_base = cfg['staging_movies'] if category == 'movies' else cfg['staging_tv']
-                library_base = cfg['movies_library'] if category == 'movies' else cfg['tv_library']
+                if 'radarr' in t['label']:
+                    category = 'movies'
+                elif 'bookshelf' in t['label']:
+                    category = 'bookshelf'
+                else:
+                    category = 'tv'
+
+                if category == 'movies':
+                    staging_base, library_base = cfg['staging_movies'], cfg['movies_library']
+                elif category == 'bookshelf':
+                    # No audiobook/ebook library matching — author/title folder
+                    # structures don't map reliably to torrent release names the
+                    # way TV season folders or "Title (Year)" movie folders do.
+                    staging_base, library_base = cfg['staging_bookshelf'], None
+                else:
+                    staging_base, library_base = cfg['staging_tv'], cfg['tv_library']
 
                 staging_path = f"{staging_base}/{t['name']}"
                 found_path = None
 
-                if has_video(staging_path):
+                is_complete = has_book(staging_path) if category == 'bookshelf' else has_video(staging_path)
+                if is_complete:
                     found_path = staging_path
-                else:
+                elif library_base:
                     found_path = find_in_library(library_base, t['name'], category)
 
                 if found_path:
