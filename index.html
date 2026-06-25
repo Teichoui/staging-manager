@@ -169,14 +169,16 @@ main { flex:1; padding:2rem; overflow-y:auto; }
   <div class="stats">
     <div class="stat"><div class="stat-label">TV Folders</div><div class="stat-value" id="s-tv">—</div></div>
     <div class="stat"><div class="stat-label">Movie Folders</div><div class="stat-value" id="s-mv">—</div></div>
-    <div class="stat"><div class="stat-label">Missing Video</div><div class="stat-value danger" id="s-miss">—</div></div>
+    <div class="stat"><div class="stat-label">Bookshelf Items</div><div class="stat-value" id="s-bs">—</div></div>
+    <div class="stat"><div class="stat-label">Incomplete</div><div class="stat-value danger" id="s-miss">—</div></div>
     <div class="stat"><div class="stat-label">Ready</div><div class="stat-value success" id="s-ready">—</div></div>
   </div>
   <div class="filter-bar">
     <button class="filter-btn active" id="sf-all" onclick="setStagingFilter('all')">All</button>
-    <button class="filter-btn" id="sf-missing" onclick="setStagingFilter('missing')">Missing Video</button>
+    <button class="filter-btn" id="sf-missing" onclick="setStagingFilter('missing')">Incomplete</button>
     <button class="filter-btn" id="sf-tv" onclick="setStagingFilter('tv')">TV</button>
     <button class="filter-btn" id="sf-movies" onclick="setStagingFilter('movies')">Movies</button>
+    <button class="filter-btn" id="sf-bookshelf" onclick="setStagingFilter('bookshelf')">Bookshelf</button>
   </div>
   <div id="staging-content"><div class="loading">Loading...</div></div>
 </div>
@@ -188,6 +190,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <div style="margin-left:auto;display:flex;gap:.5rem">
       <button class="filter-btn active" id="sbf-tv" onclick="setSeedboxCat('tv')">TV</button>
       <button class="filter-btn" id="sbf-movies" onclick="setSeedboxCat('movies')">Movies</button>
+      <button class="filter-btn" id="sbf-bookshelf" onclick="setSeedboxCat('bookshelf')">Bookshelf</button>
     </div>
   </div>
   <div id="seedbox-content"><div class="loading">Loading seedbox...</div></div>
@@ -340,6 +343,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
       </div>
       <div class="field"><label>TV Path on Seedbox</label><input type="text" id="seedbox_tv_path" placeholder="/downloads/Done3/tv-sonarr" /></div>
       <div class="field"><label>Movies Path on Seedbox</label><input type="text" id="seedbox_movies_path" placeholder="/downloads/Done3/radarr" /></div>
+      <div class="field"><label>Bookshelf Path on Seedbox</label><input type="text" id="seedbox_bookshelf_path" placeholder="/downloads/Done3/bookshelf" /></div>
       <div class="field"><label>rclone Transfers</label><input type="number" id="rclone_transfers" min="1" max="32" /></div>
       <div class="field"><label>rclone Excludes <span style="color:var(--muted)">(one per line)</span></label><textarea id="rclone_excludes" placeholder="**/*.rar&#10;**/*.r[0-9][0-9]"></textarea></div>
     </div>
@@ -371,6 +375,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
       <h3>Media Paths</h3>
       <div class="field"><label>Container Staging TV</label><input type="text" id="staging_tv" placeholder="/media/staging/tv-sonarr" /></div>
       <div class="field"><label>Container Staging Movies</label><input type="text" id="staging_movies" placeholder="/media/staging/radarr" /></div>
+      <div class="field"><label>Container Staging Bookshelf</label><input type="text" id="staging_bookshelf" placeholder="/media/staging/bookshelf" /></div>
       <div class="field"><label>TrueNAS TV Library</label><input type="text" id="tv_library" placeholder="/mnt/tank/Media/TV" /></div>
       <div class="field"><label>TrueNAS Movies Library</label><input type="text" id="movies_library" placeholder="/mnt/tank/Media/Movies" /></div>
       <div class="field"><label>TrueNAS Staging Root</label><input type="text" id="staging_root" placeholder="/mnt/tank/Media/staging" /></div>
@@ -401,7 +406,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
-let stagingData = {tv:[], movies:[]};
+let stagingData = {tv:[], movies:[], bookshelf:[]};
 let stagingFilter = 'all';
 let seedboxCat = 'tv';
 let errorFilter = 'all';
@@ -491,9 +496,10 @@ async function loadStaging() {
 }
 
 function updateStagingStats() {
-  const all = [...stagingData.tv, ...stagingData.movies];
+  const all = [...stagingData.tv, ...stagingData.movies, ...stagingData.bookshelf];
   document.getElementById('s-tv').textContent = stagingData.tv.length;
   document.getElementById('s-mv').textContent = stagingData.movies.length;
+  document.getElementById('s-bs').textContent = stagingData.bookshelf.length;
   document.getElementById('s-miss').textContent = all.filter(f=>!f.has_video).length;
   document.getElementById('s-ready').textContent = all.filter(f=>f.has_video).length;
 }
@@ -506,13 +512,15 @@ function setStagingFilter(f) {
 }
 
 function renderStaging() {
-  let tv = stagingData.tv, mv = stagingData.movies;
-  if (stagingFilter==='missing') { tv=tv.filter(f=>!f.has_video); mv=mv.filter(f=>!f.has_video); }
-  else if (stagingFilter==='tv') mv=[];
-  else if (stagingFilter==='movies') tv=[];
+  let tv = stagingData.tv, mv = stagingData.movies, bs = stagingData.bookshelf;
+  if (stagingFilter==='missing') { tv=tv.filter(f=>!f.has_video); mv=mv.filter(f=>!f.has_video); bs=bs.filter(f=>!f.has_video); }
+  else if (stagingFilter==='tv') { mv=[]; bs=[]; }
+  else if (stagingFilter==='movies') { tv=[]; bs=[]; }
+  else if (stagingFilter==='bookshelf') { tv=[]; mv=[]; }
   let html='';
-  if (stagingFilter!=='movies') html+=renderStagingSection('TV',tv,'tv');
-  if (stagingFilter!=='tv') html+=renderStagingSection('Movies',mv,'movies');
+  if (stagingFilter!=='movies' && stagingFilter!=='bookshelf') html+=renderStagingSection('TV',tv,'tv');
+  if (stagingFilter!=='tv' && stagingFilter!=='bookshelf') html+=renderStagingSection('Movies',mv,'movies');
+  if (stagingFilter!=='tv' && stagingFilter!=='movies') html+=renderStagingSection('Bookshelf',bs,'bookshelf');
   document.getElementById('staging-content').innerHTML = html||'<div class="empty">No folders match filter</div>';
 }
 
@@ -522,7 +530,7 @@ function renderStagingSection(title, folders, cat) {
     <div class="section-header">
       <span class="section-title">${esc(title)}</span>
       <span class="badge">${folders.length} folders</span>
-      ${missing>0?`<span class="badge warn">${missing} missing video</span>`:''}
+      ${missing>0?`<span class="badge warn">${missing} incomplete</span>`:''}
     </div>
     <div class="folders">
       ${folders.length===0?'<div class="empty">Empty</div>':folders.map(f=>folderRow(f)).join('')}
@@ -580,6 +588,7 @@ function setSeedboxCat(cat) {
   seedboxCat=cat;
   document.getElementById('sbf-tv').classList.toggle('active',cat==='tv');
   document.getElementById('sbf-movies').classList.toggle('active',cat==='movies');
+  document.getElementById('sbf-bookshelf').classList.toggle('active',cat==='bookshelf');
   loadSeedbox();
 }
 
@@ -701,11 +710,11 @@ async function loadSettings() {
   const cfg=await res.json();
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
-    'rclone_remote','seedbox_tv_path','seedbox_movies_path',
+    'rclone_remote','seedbox_tv_path','seedbox_movies_path','seedbox_bookshelf_path',
     'rclone_transfers','rclone_excludes',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
-    'staging_tv','staging_movies','tv_library','movies_library','staging_root',
+    'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   fields.forEach(f=>{
     const el=document.getElementById(f);
@@ -729,11 +738,11 @@ async function saveSettings() {
   msg.textContent='Saving...'; msg.className='save-msg';
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
-    'rclone_remote','seedbox_tv_path','seedbox_movies_path',
+    'rclone_remote','seedbox_tv_path','seedbox_movies_path','seedbox_bookshelf_path',
     'rclone_transfers','rclone_excludes',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
-    'staging_tv','staging_movies','tv_library','movies_library','staging_root',
+    'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   const data={};
   fields.forEach(f=>{
