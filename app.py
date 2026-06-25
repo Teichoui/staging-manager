@@ -816,7 +816,7 @@ def scan_staging(base, category):
                     file_count = 0
             folders.append({'name': name, 'category': category, 'is_file': is_file,
                             'has_video': is_ready(fp), 'file_count': file_count})
-    except Exception as e:
+    except OSError as e:
         logger.debug('staging scan skipped base=%s error=%s', base, e)
     return folders
 
