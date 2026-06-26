@@ -63,6 +63,7 @@ DEFAULT_CONFIG = {
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
     "seedbox_movies_path": "/downloads/Done3/radarr",
     "seedbox_bookshelf_path": f"{SEEDBOX_ALLOWED_ROOT}/bookshelf",
+    "tv_label": "sonarr",
     "movies_label": "radarr",
     "bookshelf_label": "readarr",
     "rclone_excludes": ["**/*.rar", "**/*.r[0-9][0-9]"],
@@ -454,7 +455,9 @@ def run_torrent_sync():
                 if already:
                     continue
 
-                # Route by rTorrent label, using the user-configured label per category
+                # Route by rTorrent label, using the user-configured label per category.
+                # tv_label is checked explicitly too, but anything unmatched (including
+                # an empty label) still falls back to tv as the default category.
                 if cfg.get('bookshelf_label', 'readarr') in t['label']:
                     category = 'bookshelf'
                     local_base = cfg['staging_bookshelf']
@@ -761,6 +764,7 @@ def save_settings():
         cfg['seedbox_movies_path'] = validate_seedbox_path(cfg['seedbox_movies_path'], 'seedbox_movies_path')
         cfg['seedbox_bookshelf_path'] = validate_seedbox_path(cfg['seedbox_bookshelf_path'], 'seedbox_bookshelf_path')
         cfg['rtorrent_url'] = validate_external_url(cfg.get('rtorrent_url', ''), 'rtorrent_url')
+        cfg['tv_label'] = validate_label(cfg.get('tv_label', ''), 'tv_label')
         cfg['movies_label'] = validate_label(cfg.get('movies_label', ''), 'movies_label')
         cfg['bookshelf_label'] = validate_label(cfg.get('bookshelf_label', ''), 'bookshelf_label')
     except ValueError as e:
