@@ -382,6 +382,13 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     </div>
 
     <div class="settings-section">
+      <h3>rTorrent Labels</h3>
+      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">The rTorrent category/label each app sets on its torrents — used to route torrents to the right staging folder. Anything not matching either label is treated as TV.</p>
+      <div class="field"><label>Movies Label</label><input type="text" id="movies_label" placeholder="radarr" /></div>
+      <div class="field"><label>Bookshelf Label</label><input type="text" id="bookshelf_label" placeholder="readarr" /></div>
+    </div>
+
+    <div class="settings-section">
       <h3>Security</h3>
       <div class="field"><label>Username</label><input type="text" id="s_username" /></div>
       <div class="field"><label>New Password <span style="color:var(--muted)">(leave blank to keep)</span></label><input type="password" id="new_password" /></div>
@@ -715,6 +722,7 @@ async function loadSettings() {
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
+    'movies_label','bookshelf_label',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   fields.forEach(f=>{
     const el=document.getElementById(f);
@@ -743,6 +751,7 @@ async function saveSettings() {
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
+    'movies_label','bookshelf_label',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   const data={};
   fields.forEach(f=>{

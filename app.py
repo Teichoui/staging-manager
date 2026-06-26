@@ -63,6 +63,8 @@ DEFAULT_CONFIG = {
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
     "seedbox_movies_path": "/downloads/Done3/radarr",
     "seedbox_bookshelf_path": f"{SEEDBOX_ALLOWED_ROOT}/bookshelf",
+    "movies_label": "radarr",
+    "bookshelf_label": "readarr",
     "rclone_excludes": ["**/*.rar", "**/*.r[0-9][0-9]"],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
@@ -173,6 +175,11 @@ def validate_rclone_remote_name(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', value.strip()):
         raise ValueError('rclone remote name may only contain letters, numbers, dot, underscore, and dash')
     return value.strip()
+
+def validate_label(value, field_name):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', value.strip()):
+        raise ValueError(f'{field_name} may only contain letters, numbers, dot, underscore, and dash')
+    return value.strip().lower()
 
 def validate_seedbox_path(path, field_name):
     if not isinstance(path, str) or not path.strip().startswith('/'):
@@ -447,12 +454,11 @@ def run_torrent_sync():
                 if already:
                     continue
 
-                # Route by rTorrent label: 'radarr' → movies, 'readarr' (Bookshelf's
-                # download client label) → bookshelf, else tv
-                if 'readarr' in t['label']:
+                # Route by rTorrent label, using the user-configured label per category
+                if cfg.get('bookshelf_label', 'readarr') in t['label']:
                     category = 'bookshelf'
                     local_base = cfg['staging_bookshelf']
-                elif 'radarr' in t['label']:
+                elif cfg.get('movies_label', 'radarr') in t['label']:
                     category = 'movies'
                     local_base = cfg['staging_movies']
                 else:
@@ -755,6 +761,8 @@ def save_settings():
         cfg['seedbox_movies_path'] = validate_seedbox_path(cfg['seedbox_movies_path'], 'seedbox_movies_path')
         cfg['seedbox_bookshelf_path'] = validate_seedbox_path(cfg['seedbox_bookshelf_path'], 'seedbox_bookshelf_path')
         cfg['rtorrent_url'] = validate_external_url(cfg.get('rtorrent_url', ''), 'rtorrent_url')
+        cfg['movies_label'] = validate_label(cfg.get('movies_label', ''), 'movies_label')
+        cfg['bookshelf_label'] = validate_label(cfg.get('bookshelf_label', ''), 'bookshelf_label')
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     # Handle password change
@@ -1348,9 +1356,9 @@ def torrent_sync_import_existing():
                     counts['already_in_db'] += 1
                     continue
 
-                if 'readarr' in t['label']:
+                if cfg.get('bookshelf_label', 'readarr') in t['label']:
                     category = 'bookshelf'
-                elif 'radarr' in t['label']:
+                elif cfg.get('movies_label', 'radarr') in t['label']:
                     category = 'movies'
                 else:
                     category = 'tv'
