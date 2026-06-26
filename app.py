@@ -447,13 +447,14 @@ def run_torrent_sync():
                 if already:
                     continue
 
-                # Route by rTorrent label: 'radarr' → movies, 'bookshelf' → bookshelf, else tv
-                if 'radarr' in t['label']:
-                    category = 'movies'
-                    local_base = cfg['staging_movies']
-                elif 'bookshelf' in t['label']:
+                # Route by rTorrent label: 'radarr' → movies, 'readarr' (Bookshelf's
+                # download client label) → bookshelf, else tv
+                if 'readarr' in t['label']:
                     category = 'bookshelf'
                     local_base = cfg['staging_bookshelf']
+                elif 'radarr' in t['label']:
+                    category = 'movies'
+                    local_base = cfg['staging_movies']
                 else:
                     category = 'tv'
                     local_base = cfg['staging_tv']
@@ -1347,10 +1348,10 @@ def torrent_sync_import_existing():
                     counts['already_in_db'] += 1
                     continue
 
-                if 'radarr' in t['label']:
-                    category = 'movies'
-                elif 'bookshelf' in t['label']:
+                if 'readarr' in t['label']:
                     category = 'bookshelf'
+                elif 'radarr' in t['label']:
+                    category = 'movies'
                 else:
                     category = 'tv'
 
