@@ -390,6 +390,12 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     </div>
 
     <div class="settings-section">
+      <h3>Ignore List</h3>
+      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">Torrents matching any entry here are never synced. Plain text matches anywhere in the torrent name; use *, ?, or [] for glob patterns.</p>
+      <div class="field"><label>Ignored Torrents <span style="color:var(--muted)">(one per line)</span></label><textarea id="ignore_torrents" placeholder="Jack Ryan&#10;Robert Jordan*"></textarea></div>
+    </div>
+
+    <div class="settings-section">
       <h3>Security</h3>
       <div class="field"><label>Username</label><input type="text" id="s_username" /></div>
       <div class="field"><label>New Password <span style="color:var(--muted)">(leave blank to keep)</span></label><input type="password" id="new_password" /></div>
@@ -719,7 +725,7 @@ async function loadSettings() {
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
     'rclone_remote','seedbox_tv_path','seedbox_movies_path','seedbox_bookshelf_path',
-    'rclone_transfers','rclone_excludes',
+    'rclone_transfers','rclone_excludes','ignore_torrents',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
@@ -748,7 +754,7 @@ async function saveSettings() {
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
     'rclone_remote','seedbox_tv_path','seedbox_movies_path','seedbox_bookshelf_path',
-    'rclone_transfers','rclone_excludes',
+    'rclone_transfers','rclone_excludes','ignore_torrents',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
@@ -834,9 +840,10 @@ async function importExisting() {
     if (handle401(res)) return;
     const d = await res.json();
     if (d.error) { toast('✗ ' + d.error, 'error'); return; }
+    const ignoredSuffix = d.ignored > 0 ? `, ${d.ignored} ignored` : '';
     const msg = d.imported > 0
-      ? `✓ ${d.imported} marked done, ${d.not_found} queued for sync (${d.already_in_db} already in DB)`
-      : `✓ Nothing to import — ${d.already_in_db} already in DB, ${d.not_found} queued for sync`;
+      ? `✓ ${d.imported} marked done, ${d.not_found} queued for sync (${d.already_in_db} already in DB${ignoredSuffix})`
+      : `✓ Nothing to import — ${d.already_in_db} already in DB, ${d.not_found} queued for sync${ignoredSuffix}`;
     toast(msg, d.imported > 0 ? 'success' : 'info');
     loadSyncHistory();
   } catch(e) {
