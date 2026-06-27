@@ -48,14 +48,21 @@ def _normalize_for_match(s):
 
 def torrent_name_ignored(name, patterns):
     """Match a torrent's full name against user-configured ignore entries (case-insensitive).
-    Plain text matches as a substring (separator-insensitive); entries containing glob
-    characters (*?[]) use fnmatch against the raw name."""
+    Plain text matches as a substring (separator-insensitive). Only '*' and '?' are treated
+    as wildcards against the raw name; every other character (including literal '[' or ']',
+    common in release names like "[Ohys-Raws] Spy x Family...") matches literally rather
+    than as an fnmatch character class. This mirrors isNameIgnored() in index.html exactly,
+    so the Staging tab's ignore badge can never disagree with what the sync engine skips."""
     name_lower = name.lower()
     name_normalized = _normalize_for_match(name_lower)
     for pattern in patterns:
         pattern_lower = pattern.lower()
-        if any(c in pattern_lower for c in '*?['):
-            if fnmatch.fnmatch(name_lower, pattern_lower):
+        if any(c in pattern_lower for c in '*?'):
+            regex = ''.join(
+                '.*' if c == '*' else '.' if c == '?' else re.escape(c)
+                for c in pattern_lower
+            )
+            if re.fullmatch(regex, name_lower):
                 return True
         elif _normalize_for_match(pattern_lower) in name_normalized:
             return True
