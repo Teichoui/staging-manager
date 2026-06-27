@@ -403,7 +403,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
     <div class="settings-section">
       <h3>Ignore List</h3>
-      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">Torrents matching any entry here are never synced. Plain text matches anywhere in the torrent name; use * or ? as wildcards. Brackets like [ ] match literally (e.g. "[Ohys-Raws]...").</p>
+      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">Torrents matching any entry here are never synced. Plain text (no * or ?) matches anywhere in the torrent name, ignoring dots/dashes/underscores (e.g. "Jack Ryan" matches "Jack.Ryan.S01E01"). Adding * or ? switches that entry to an exact, full-name glob against the raw name — no separator normalization, so use the actual dots/spaces and wrap with * for a "contains" match (e.g. "*Jack.Ryan*"). Brackets like [ ] always match literally, never as a character class.</p>
       <div class="field"><label>Ignored Torrents <span style="color:var(--muted)">(one per line)</span></label><textarea id="ignore_torrents" placeholder="Jack Ryan&#10;Robert Jordan*"></textarea></div>
     </div>
 
@@ -536,13 +536,14 @@ function isNameIgnored(name) {
   const nameLower = name.toLowerCase();
   const nameNorm = normalizeForMatch(name);
   return ignoreList.some(pattern => {
-    const patternLower = pattern.toLowerCase();
-    // Only '*'/'?' are treated as glob here (unlike the backend, which also
-    // treats '[' as a glob trigger via Python's fnmatch). Release names commonly
-    // contain literal brackets, e.g. "[Ohys-Raws] Spy x Family...", and naively
-    // building a RegExp character class from arbitrary user text can throw
-    // (invalid range, unbalanced class). Treating bare brackets as plain text
-    // avoids that; the try/catch below is a second line of defense.
+    const patternLower = pattern.trim().toLowerCase();
+    if (!patternLower) return false;
+    // Mirrors the backend's torrent_name_ignored() exactly: only '*'/'?' are
+    // glob wildcards. Release names commonly contain literal brackets, e.g.
+    // "[Ohys-Raws] Spy x Family...", so brackets are always escaped/literal
+    // rather than parsed as a regex character class (which could throw on
+    // malformed input like an unmatched '['); the try/catch is a second
+    // line of defense against that.
     if (/[*?]/.test(patternLower)) {
       try {
         const re = new RegExp('^' + patternLower.replace(/[.+^${}()|[\]\\]/g, '\\$&')

@@ -56,7 +56,9 @@ def torrent_name_ignored(name, patterns):
     name_lower = name.lower()
     name_normalized = _normalize_for_match(name_lower)
     for pattern in patterns:
-        pattern_lower = pattern.lower()
+        pattern_lower = pattern.strip().lower()
+        if not pattern_lower:
+            continue
         if any(c in pattern_lower for c in '*?'):
             regex = ''.join(
                 '.*' if c == '*' else '.' if c == '?' else re.escape(c)
