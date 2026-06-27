@@ -33,6 +33,8 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 /* Stats bar */
 .stats { display:flex; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap; }
 .stat { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:.75rem 1.25rem; flex:1; min-width:120px; }
+.stat.clickable { cursor:pointer; transition:border-color .15s; }
+.stat.clickable:hover { border-color:var(--accent); }
 .stat-label { font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; margin-bottom:.2rem; }
 .stat-value { font-size:1.6rem; font-weight:700; }
 .stat-value.warn { color:var(--warn); }
@@ -167,11 +169,11 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 <!-- ── STAGING ── -->
 <div id="tab-staging" class="tab-content active">
   <div class="stats">
-    <div class="stat"><div class="stat-label">TV Folders</div><div class="stat-value" id="s-tv">—</div></div>
-    <div class="stat"><div class="stat-label">Movie Folders</div><div class="stat-value" id="s-mv">—</div></div>
-    <div class="stat"><div class="stat-label">Bookshelf Items</div><div class="stat-value" id="s-bs">—</div></div>
-    <div class="stat"><div class="stat-label">Incomplete</div><div class="stat-value danger" id="s-miss">—</div></div>
-    <div class="stat"><div class="stat-label">Ready</div><div class="stat-value success" id="s-ready">—</div></div>
+    <div class="stat clickable" onclick="setStagingFilter('tv')"><div class="stat-label">TV Folders</div><div class="stat-value" id="s-tv">—</div></div>
+    <div class="stat clickable" onclick="setStagingFilter('movies')"><div class="stat-label">Movie Folders</div><div class="stat-value" id="s-mv">—</div></div>
+    <div class="stat clickable" onclick="setStagingFilter('bookshelf')"><div class="stat-label">Bookshelf Items</div><div class="stat-value" id="s-bs">—</div></div>
+    <div class="stat clickable" onclick="setStagingFilter('missing')"><div class="stat-label">Incomplete</div><div class="stat-value danger" id="s-miss">—</div></div>
+    <div class="stat clickable" onclick="setStagingFilter('ready')"><div class="stat-label">Ready</div><div class="stat-value success" id="s-ready">—</div></div>
   </div>
   <div class="filter-bar">
     <button class="filter-btn active" id="sf-all" onclick="setStagingFilter('all')">All</button>
@@ -179,6 +181,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <button class="filter-btn" id="sf-tv" onclick="setStagingFilter('tv')">TV</button>
     <button class="filter-btn" id="sf-movies" onclick="setStagingFilter('movies')">Movies</button>
     <button class="filter-btn" id="sf-bookshelf" onclick="setStagingFilter('bookshelf')">Bookshelf</button>
+    <button class="filter-btn" id="sf-ready" onclick="setStagingFilter('ready')">Ready</button>
   </div>
   <div id="staging-content"><div class="loading">Loading...</div></div>
 </div>
@@ -390,6 +393,12 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     </div>
 
     <div class="settings-section">
+      <h3>Ignore List</h3>
+      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">Torrents matching any entry here are never synced. Plain text matches anywhere in the torrent name; use *, ?, or [] for glob patterns.</p>
+      <div class="field"><label>Ignored Torrents <span style="color:var(--muted)">(one per line)</span></label><textarea id="ignore_torrents" placeholder="Jack Ryan&#10;Robert Jordan*"></textarea></div>
+    </div>
+
+    <div class="settings-section">
       <h3>Security</h3>
       <div class="field"><label>Username</label><input type="text" id="s_username" /></div>
       <div class="field"><label>New Password <span style="color:var(--muted)">(leave blank to keep)</span></label><input type="password" id="new_password" /></div>
@@ -522,6 +531,7 @@ function setStagingFilter(f) {
 function renderStaging() {
   let tv = stagingData.tv, mv = stagingData.movies, bs = stagingData.bookshelf;
   if (stagingFilter==='missing') { tv=tv.filter(f=>!f.has_video); mv=mv.filter(f=>!f.has_video); bs=bs.filter(f=>!f.has_video); }
+  else if (stagingFilter==='ready') { tv=tv.filter(f=>f.has_video); mv=mv.filter(f=>f.has_video); bs=bs.filter(f=>f.has_video); }
   else if (stagingFilter==='tv') { mv=[]; bs=[]; }
   else if (stagingFilter==='movies') { tv=[]; bs=[]; }
   else if (stagingFilter==='bookshelf') { tv=[]; mv=[]; }
@@ -719,7 +729,7 @@ async function loadSettings() {
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
     'rclone_remote','seedbox_tv_path','seedbox_movies_path','seedbox_bookshelf_path',
-    'rclone_transfers','rclone_excludes',
+    'rclone_transfers','rclone_excludes','ignore_torrents',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
@@ -748,7 +758,7 @@ async function saveSettings() {
   const fields=['sonarr_url','sonarr_api_key','radarr_url','radarr_api_key',
     'truenas_url','truenas_api_key','cf_access_client_id','cf_access_client_secret',
     'rclone_remote','seedbox_tv_path','seedbox_movies_path','seedbox_bookshelf_path',
-    'rclone_transfers','rclone_excludes',
+    'rclone_transfers','rclone_excludes','ignore_torrents',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
     'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','staging_root',
@@ -834,9 +844,10 @@ async function importExisting() {
     if (handle401(res)) return;
     const d = await res.json();
     if (d.error) { toast('✗ ' + d.error, 'error'); return; }
+    const ignoredSuffix = d.ignored > 0 ? `, ${d.ignored} ignored` : '';
     const msg = d.imported > 0
-      ? `✓ ${d.imported} marked done, ${d.not_found} queued for sync (${d.already_in_db} already in DB)`
-      : `✓ Nothing to import — ${d.already_in_db} already in DB, ${d.not_found} queued for sync`;
+      ? `✓ ${d.imported} marked done, ${d.not_found} queued for sync (${d.already_in_db} already in DB${ignoredSuffix})`
+      : `✓ Nothing to import — ${d.already_in_db} already in DB, ${d.not_found} queued for sync${ignoredSuffix}`;
     toast(msg, d.imported > 0 ? 'success' : 'info');
     loadSyncHistory();
   } catch(e) {

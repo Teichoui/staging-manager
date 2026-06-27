@@ -40,6 +40,26 @@ def name_matches_excludes(name, patterns):
         if fnmatch.fnmatch(name, basename_pattern):
             return True
     return False
+
+def _normalize_for_match(s):
+    """Collapse '.', '_', '-', and whitespace runs to single spaces, so plain-text
+    ignore entries match dotted release names (e.g. 'Jack Ryan' vs 'Jack.Ryan.S01E01')."""
+    return re.sub(r'[._\-\s]+', ' ', s).strip()
+
+def torrent_name_ignored(name, patterns):
+    """Match a torrent's full name against user-configured ignore entries (case-insensitive).
+    Plain text matches as a substring (separator-insensitive); entries containing glob
+    characters (*?[]) use fnmatch against the raw name."""
+    name_lower = name.lower()
+    name_normalized = _normalize_for_match(name_lower)
+    for pattern in patterns:
+        pattern_lower = pattern.lower()
+        if any(c in pattern_lower for c in '*?['):
+            if fnmatch.fnmatch(name_lower, pattern_lower):
+                return True
+        elif _normalize_for_match(pattern_lower) in name_normalized:
+            return True
+    return False
 CONTAINER_STAGING_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_STAGING_ROOT', '/media/staging')
 TRUENAS_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_TRUENAS_MEDIA_ROOT', '/mnt/tank/Media')
 SEEDBOX_ALLOWED_ROOT = os.environ.get('STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT', '/downloads/Done3')
@@ -67,6 +87,7 @@ DEFAULT_CONFIG = {
     "movies_label": "radarr",
     "bookshelf_label": "readarr",
     "rclone_excludes": ["**/*.rar", "**/*.r[0-9][0-9]"],
+    "ignore_torrents": [],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
     "sonarr_api_key": "",
@@ -455,6 +476,9 @@ def run_torrent_sync():
                 if already:
                     continue
 
+                if torrent_name_ignored(t['name'], cfg.get('ignore_torrents', [])):
+                    continue
+
                 # Route by rTorrent label, using the user-configured label per category.
                 # tv_label is checked explicitly too, but anything unmatched (including
                 # an empty label) still falls back to tv as the default category.
@@ -749,6 +773,12 @@ def save_settings():
             cfg['rclone_excludes'] = [x.strip() for x in raw_excludes.splitlines() if x.strip()]
         elif isinstance(raw_excludes, list):
             cfg['rclone_excludes'] = [str(x).strip() for x in raw_excludes if str(x).strip()]
+    if 'ignore_torrents' in data:
+        raw_ignores = data.get('ignore_torrents') or []
+        if isinstance(raw_ignores, str):
+            cfg['ignore_torrents'] = [x.strip() for x in raw_ignores.splitlines() if x.strip()]
+        elif isinstance(raw_ignores, list):
+            cfg['ignore_torrents'] = [str(x).strip() for x in raw_ignores if str(x).strip()]
     try:
         cfg['staging_tv'] = validate_managed_path(cfg['staging_tv'], CONTAINER_STAGING_ROOT, 'staging_tv')
         cfg['staging_movies'] = validate_managed_path(cfg['staging_movies'], CONTAINER_STAGING_ROOT, 'staging_movies')
@@ -1299,7 +1329,7 @@ def torrent_sync_import_existing():
             logger.warning('import-existing: rTorrent query failed: %s', e)
             return jsonify({'error': 'rTorrent query failed'}), 500
 
-        counts = {'checked': 0, 'already_in_db': 0, 'imported': 0, 'not_found': 0}
+        counts = {'checked': 0, 'already_in_db': 0, 'imported': 0, 'not_found': 0, 'ignored': 0}
 
         def show_name_from_torrent(name):
             m = re.search(r'[. _](?:S\d{2}|(?:19|20)\d{2}|(?:480|720|1080|2160)[pi])', name, re.IGNORECASE)
@@ -1358,6 +1388,10 @@ def torrent_sync_import_existing():
                 ).fetchone()
                 if already:
                     counts['already_in_db'] += 1
+                    continue
+
+                if torrent_name_ignored(t['name'], cfg.get('ignore_torrents', [])):
+                    counts['ignored'] += 1
                     continue
 
                 if cfg.get('bookshelf_label', 'readarr') in t['label']:
