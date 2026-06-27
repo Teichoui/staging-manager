@@ -870,7 +870,17 @@ async function saveSettings() {
   const res=await postJson('/api/settings',data);
   if(handle401(res)) return;
   const result=await res.json();
-  if(result.success){ msg.textContent='✓ Saved'; msg.className='save-msg ok'; document.getElementById('new_password').value=''; }
+  if(result.success){
+    msg.textContent='✓ Saved'; msg.className='save-msg ok'; document.getElementById('new_password').value='';
+    if ('ignore_torrents' in data) {
+      // Mirror the backend's newline-split parsing so the Staging tab's ignore
+      // badges reflect this save immediately, even if Staging was already
+      // rendered once before (tabLoaded.staging skips a reload on tab switch).
+      ignoreList = String(data.ignore_torrents).split('\n').map(s=>s.trim()).filter(Boolean);
+      if (currentTab === 'staging') renderStaging();
+      else tabLoaded['staging'] = false;
+    }
+  }
   else { msg.textContent='✗ '+result.error; msg.className='save-msg err'; }
   setTimeout(()=>msg.textContent='',3000);
 }
