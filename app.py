@@ -428,7 +428,7 @@ def init_db():
         conn.commit()
 
 # ── rTorrent XMLRPC client ────────────────────────────────────────────────────
-def query_rtorrent(cfg):
+def connect_rtorrent(cfg):
     url = cfg.get('rtorrent_url', '').strip()
     user = cfg.get('rtorrent_user', '').strip()
     password = cfg.get('rtorrent_password', '').strip()
@@ -441,7 +441,10 @@ def query_rtorrent(cfg):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     transport = xmlrpc.client.SafeTransport(context=ctx)
-    client = xmlrpc.client.ServerProxy(auth_url, transport=transport)
+    return xmlrpc.client.ServerProxy(auth_url, transport=transport)
+
+def query_rtorrent(cfg):
+    client = connect_rtorrent(cfg)
     results = client.d.multicall2('', 'complete',
         'd.hash=', 'd.name=', 'd.base_path=', 'd.complete=', 'd.custom1=', 'd.is_multi_file=')
     completed = []
@@ -456,6 +459,24 @@ def query_rtorrent(cfg):
                 'is_multi_file': bool(is_multi_file),
             })
     return completed
+
+def detect_category_from_files(cfg, torrent_hash):
+    """Fallback for torrents whose label doesn't match any configured category.
+    Some download clients (e.g. Bookshelf, which is Readarr-based) don't
+    reliably set their category label on the actual rTorrent download, which
+    otherwise leaves audiobook/ebook torrents stuck retrying forever as 'tv'
+    (they never pass the video-file completeness check). Look at the torrent's
+    actual file extensions via rTorrent's f.multicall as a second signal."""
+    try:
+        client = connect_rtorrent(cfg)
+        paths = client.f.multicall(torrent_hash, '', 'f.path=')
+        exts = {os.path.splitext(p[0])[1].lower() for p in paths if p and p[0]}
+    except Exception as e:
+        logger.warning('detect_category_from_files failed for %s: %s', torrent_hash, e)
+        return None
+    if exts & BOOK_EXTENSIONS and not (exts & VIDEO_EXTENSIONS):
+        return 'bookshelf'
+    return None
 
 # ── Torrent sync engine ───────────────────────────────────────────────────────
 torrent_sync_state = {
@@ -490,16 +511,15 @@ def run_torrent_sync():
 
                 # Route by rTorrent label, using the user-configured label per category.
                 # tv_label is checked explicitly too, but anything unmatched (including
-                # an empty label) still falls back to tv as the default category.
+                # an empty label) falls back to checking actual file extensions before
+                # defaulting to tv, since not every download client reliably sets a label.
                 if cfg.get('bookshelf_label', 'readarr') in t['label']:
                     category = 'bookshelf'
-                    local_base = cfg['staging_bookshelf']
                 elif cfg.get('movies_label', 'radarr') in t['label']:
                     category = 'movies'
-                    local_base = cfg['staging_movies']
                 else:
-                    category = 'tv'
-                    local_base = cfg['staging_tv']
+                    category = detect_category_from_files(cfg, t['hash']) or 'tv'
+                local_base = {'movies': cfg['staging_movies'], 'bookshelf': cfg['staging_bookshelf']}.get(category, cfg['staging_tv'])
 
                 local_path = f"{local_base}/{t['name']}"
                 torrent_sync_state['active_torrent'] = t['name']
@@ -1462,7 +1482,7 @@ def torrent_sync_import_existing():
                 elif cfg.get('movies_label', 'radarr') in t['label']:
                     category = 'movies'
                 else:
-                    category = 'tv'
+                    category = detect_category_from_files(cfg, t['hash']) or 'tv'
 
                 if category == 'movies':
                     staging_base, library_base = cfg['staging_movies'], cfg['movies_library']
