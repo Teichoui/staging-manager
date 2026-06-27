@@ -184,6 +184,15 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <button class="filter-btn" id="sf-ready" onclick="setStagingFilter('ready')">Ready</button>
   </div>
   <div id="staging-content"><div class="loading">Loading...</div></div>
+
+  <!-- Sync History (DB) — edit/remove entries without going to the Sync tab -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">Sync History</span>
+      <span class="badge" id="staging-history-count">—</span>
+    </div>
+    <div id="staging-history-content"><div class="loading">Loading...</div></div>
+  </div>
 </div>
 
 <!-- ── SEEDBOX ── -->
@@ -510,6 +519,7 @@ async function loadStaging() {
   stagingData = await res.json();
   updateStagingStats();
   renderStaging();
+  loadSyncHistory();
 }
 
 function updateStagingStats() {
@@ -903,40 +913,51 @@ async function updateSyncInterval() {
   else toast('✗ '+(d.error||'failed'),'error');
 }
 
+// History is shown on both the Sync tab and the Staging tab; each gets its own
+// DOM id prefix so editing one doesn't collide with ids in the other.
+const HISTORY_TARGETS = ['sync-history', 'staging-history'];
+
 async function loadSyncHistory() {
   const res = await fetch('/api/torrent-sync/history');
   if (handle401(res)) return;
   const d = await res.json();
   const items = d.history || [];
-  document.getElementById('sync-history-count').textContent = items.length+' torrents';
-  if (!items.length) {
-    document.getElementById('sync-history-content').innerHTML='<div class="empty">No synced torrents yet</div>';
-    return;
-  }
-  const rows = items.map(t=>historyRow(t)).join('');
-  document.getElementById('sync-history-content').innerHTML=`<div class="folders">${rows}</div>`;
+  HISTORY_TARGETS.forEach(prefix => renderHistoryTarget(prefix, items));
 }
 
-function historyRow(t) {
-  return `<div class="folder" id="hist-row-${t.id}">
+function renderHistoryTarget(prefix, items) {
+  const countEl = document.getElementById(`${prefix}-count`);
+  const contentEl = document.getElementById(`${prefix}-content`);
+  if (!countEl || !contentEl) return;
+  countEl.textContent = items.length+' torrents';
+  if (!items.length) {
+    contentEl.innerHTML = '<div class="empty">No synced torrents yet</div>';
+    return;
+  }
+  const rows = items.map(t=>historyRow(prefix, t)).join('');
+  contentEl.innerHTML = `<div class="folders">${rows}</div>`;
+}
+
+function historyRow(prefix, t) {
+  return `<div class="folder" id="${prefix}-row-${t.id}">
       <div class="dot ok"></div>
       <span class="folder-name">${esc(t.torrent_name)}</span>
       <span class="folder-meta">${esc(t.category)} · ${esc(t.synced_at)}</span>
       <span class="badge ok">${esc(t.status)}</span>
       <div class="actions">
-        <button class="btn btn-action" onclick="editHistoryRow(${t.id},'${esc(jsArg(t.category))}','${esc(jsArg(t.local_path))}')">✎ edit</button>
-        <button class="btn btn-delete" onclick="deleteHistoryRow(${t.id},this)">✕ remove</button>
+        <button class="btn btn-action" onclick="editHistoryRow('${prefix}',${t.id},'${esc(jsArg(t.category))}','${esc(jsArg(t.local_path))}')">✎ edit</button>
+        <button class="btn btn-delete" onclick="deleteHistoryRow('${prefix}',${t.id},this)">✕ remove</button>
       </div>
     </div>`;
 }
 
-function editHistoryRow(id, category, localPath) {
-  const row = document.getElementById(`hist-row-${id}`);
+function editHistoryRow(prefix, id, category, localPath) {
+  const row = document.getElementById(`${prefix}-row-${id}`);
   if (!row) return;
   row.innerHTML = `
     <div class="field" style="flex:1;margin-bottom:0">
       <label>Category</label>
-      <select id="hist-cat-${id}">
+      <select id="${prefix}-cat-${id}">
         <option value="tv" ${category==='tv'?'selected':''}>tv</option>
         <option value="movies" ${category==='movies'?'selected':''}>movies</option>
         <option value="bookshelf" ${category==='bookshelf'?'selected':''}>bookshelf</option>
@@ -944,17 +965,17 @@ function editHistoryRow(id, category, localPath) {
     </div>
     <div class="field" style="flex:2;margin-bottom:0">
       <label>Local Path</label>
-      <input type="text" id="hist-path-${id}" value="${esc(localPath)}" />
+      <input type="text" id="${prefix}-path-${id}" value="${esc(localPath)}" />
     </div>
     <div class="actions">
-      <button class="btn btn-success" onclick="saveHistoryRow(${id})">✓ save</button>
+      <button class="btn btn-success" onclick="saveHistoryRow('${prefix}',${id})">✓ save</button>
       <button class="btn btn-sync" onclick="loadSyncHistory()">✕ cancel</button>
     </div>`;
 }
 
-async function saveHistoryRow(id) {
-  const category = document.getElementById(`hist-cat-${id}`).value;
-  const local_path = document.getElementById(`hist-path-${id}`).value;
+async function saveHistoryRow(prefix, id) {
+  const category = document.getElementById(`${prefix}-cat-${id}`).value;
+  const local_path = document.getElementById(`${prefix}-path-${id}`).value;
   const res = await postJson(`/api/torrent-sync/history/${id}/edit`, {category, local_path});
   if (handle401(res)) return;
   const data = await res.json();
@@ -962,7 +983,7 @@ async function saveHistoryRow(id) {
   else toast(`✗ ${data.error}`, 'error');
 }
 
-async function deleteHistoryRow(id, btn) {
+async function deleteHistoryRow(prefix, id, btn) {
   if (!confirm('Remove this entry from sync history?\nIt will be re-synced on the next cycle (or Import Existing) instead of being skipped as already-done.')) return;
   btn.disabled = true; btn.textContent = '⟳...';
   const res = await postJson(`/api/torrent-sync/history/${id}/delete`, {});
