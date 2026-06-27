@@ -1306,13 +1306,67 @@ def torrent_sync_history():
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                'SELECT torrent_name, category, synced_at, status, local_path '
+                'SELECT id, torrent_name, category, synced_at, status, local_path '
                 'FROM synced_torrents ORDER BY id DESC LIMIT 100'
             ).fetchall()
         return jsonify({'history': [dict(r) for r in rows]})
     except Exception as e:
         logger.exception('torrent sync history error')
         return public_error('Could not read history')
+
+@app.route('/api/torrent-sync/history/<int:row_id>/delete', methods=['POST'])
+@limiter.limit("20 per minute")
+def torrent_sync_history_delete(row_id):
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute('DELETE FROM synced_torrents WHERE id=?', (row_id,))
+        conn.commit()
+    if cur.rowcount == 0:
+        return jsonify({'error': 'Not found'}), 404
+    logger.info('sync history entry %d deleted by user', row_id)
+    return jsonify({'success': True})
+
+@app.route('/api/torrent-sync/history/<int:row_id>/edit', methods=['POST'])
+@limiter.limit("20 per minute")
+def torrent_sync_history_edit(row_id):
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.json or {}
+    updates = {}
+    if 'category' in data:
+        category = str(data['category']).strip().lower()
+        if category not in ('tv', 'movies', 'bookshelf'):
+            return jsonify({'error': 'category must be tv, movies, or bookshelf'}), 400
+        updates['category'] = category
+    if 'local_path' in data:
+        # local_path may point into staging (live sync) or directly into the TV/Movie
+        # library (import-existing matches against an already-imported library item),
+        # so accept either root rather than forcing everything under staging.
+        candidate = str(data['local_path']).strip().rstrip('/\\')
+        if not candidate:
+            return jsonify({'error': 'local_path is required'}), 400
+        if not (is_strict_subpath(candidate, CONTAINER_STAGING_ROOT)
+                or is_strict_subpath(candidate, TRUENAS_MEDIA_ROOT)):
+            return jsonify({
+                'error': f'local_path must stay under {CONTAINER_STAGING_ROOT} or {TRUENAS_MEDIA_ROOT}'
+            }), 400
+        updates['local_path'] = candidate
+    if 'status' in data:
+        updates['status'] = str(data['status']).strip()[:50]
+    if not updates:
+        return jsonify({'error': 'No valid fields to update'}), 400
+    set_clause = ', '.join(f'{k}=?' for k in updates)
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            f'UPDATE synced_torrents SET {set_clause} WHERE id=?',
+            (*updates.values(), row_id)
+        )
+        conn.commit()
+    if cur.rowcount == 0:
+        return jsonify({'error': 'Not found'}), 404
+    logger.info('sync history entry %d updated by user: %s', row_id, list(updates.keys()))
+    return jsonify({'success': True})
 
 @app.route('/api/torrent-sync/import-existing', methods=['POST'])
 @limiter.limit("5 per minute")
