@@ -489,7 +489,7 @@ def detect_category_from_files(cfg, torrent_hash, torrent_name=''):
     # Generic audio formats (.mp3/.m4a/.flac) are ambiguous on their own - plain
     # music releases use them too - but audiobook release names almost always
     # carry a marker like "Unabridged" or "Book 1" that music albums don't.
-    if exts & BOOK_EXTENSIONS and AUDIOBOOK_NAME_MARKERS.search(torrent_name or ''):
+    if exts & BOOK_EXTENSIONS and AUDIOBOOK_NAME_MARKERS.search(_normalize_for_match(torrent_name or '')):
         return 'bookshelf'
     return None
 
