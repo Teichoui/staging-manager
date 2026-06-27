@@ -1310,11 +1310,18 @@ def torrent_sync_history_edit(row_id):
             return jsonify({'error': 'category must be tv, movies, or bookshelf'}), 400
         updates['category'] = category
     if 'local_path' in data:
-        try:
-            updates['local_path'] = validate_managed_path(
-                str(data['local_path']), CONTAINER_STAGING_ROOT, 'local_path')
-        except ValueError as e:
-            return jsonify({'error': str(e)}), 400
+        # local_path may point into staging (live sync) or directly into the TV/Movie
+        # library (import-existing matches against an already-imported library item),
+        # so accept either root rather than forcing everything under staging.
+        candidate = str(data['local_path']).strip().rstrip('/\\')
+        if not candidate:
+            return jsonify({'error': 'local_path is required'}), 400
+        if not (is_strict_subpath(candidate, CONTAINER_STAGING_ROOT)
+                or is_strict_subpath(candidate, TRUENAS_MEDIA_ROOT)):
+            return jsonify({
+                'error': f'local_path must stay under {CONTAINER_STAGING_ROOT} or {TRUENAS_MEDIA_ROOT}'
+            }), 400
+        updates['local_path'] = candidate
     if 'status' in data:
         updates['status'] = str(data['status']).strip()[:50]
     if not updates:
