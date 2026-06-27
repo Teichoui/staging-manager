@@ -876,14 +876,63 @@ async function loadSyncHistory() {
     document.getElementById('sync-history-content').innerHTML='<div class="empty">No synced torrents yet</div>';
     return;
   }
-  const rows = items.map(t=>`
-    <div class="folder">
+  const rows = items.map(t=>historyRow(t)).join('');
+  document.getElementById('sync-history-content').innerHTML=`<div class="folders">${rows}</div>`;
+}
+
+function historyRow(t) {
+  return `<div class="folder" id="hist-row-${t.id}">
       <div class="dot ok"></div>
       <span class="folder-name">${esc(t.torrent_name)}</span>
       <span class="folder-meta">${esc(t.category)} · ${esc(t.synced_at)}</span>
       <span class="badge ok">${esc(t.status)}</span>
-    </div>`).join('');
-  document.getElementById('sync-history-content').innerHTML=`<div class="folders">${rows}</div>`;
+      <div class="actions">
+        <button class="btn btn-action" onclick="editHistoryRow(${t.id},'${esc(jsArg(t.category))}','${esc(jsArg(t.local_path))}')">✎ edit</button>
+        <button class="btn btn-delete" onclick="deleteHistoryRow(${t.id},this)">✕ remove</button>
+      </div>
+    </div>`;
+}
+
+function editHistoryRow(id, category, localPath) {
+  const row = document.getElementById(`hist-row-${id}`);
+  if (!row) return;
+  row.innerHTML = `
+    <div class="field" style="flex:1;margin-bottom:0">
+      <label>Category</label>
+      <select id="hist-cat-${id}">
+        <option value="tv" ${category==='tv'?'selected':''}>tv</option>
+        <option value="movies" ${category==='movies'?'selected':''}>movies</option>
+        <option value="bookshelf" ${category==='bookshelf'?'selected':''}>bookshelf</option>
+      </select>
+    </div>
+    <div class="field" style="flex:2;margin-bottom:0">
+      <label>Local Path</label>
+      <input type="text" id="hist-path-${id}" value="${esc(localPath)}" />
+    </div>
+    <div class="actions">
+      <button class="btn btn-success" onclick="saveHistoryRow(${id})">✓ save</button>
+      <button class="btn btn-sync" onclick="loadSyncHistory()">✕ cancel</button>
+    </div>`;
+}
+
+async function saveHistoryRow(id) {
+  const category = document.getElementById(`hist-cat-${id}`).value;
+  const local_path = document.getElementById(`hist-path-${id}`).value;
+  const res = await postJson(`/api/torrent-sync/history/${id}/edit`, {category, local_path});
+  if (handle401(res)) return;
+  const data = await res.json();
+  if (data.success) { toast('✓ Updated', 'success'); loadSyncHistory(); }
+  else toast(`✗ ${data.error}`, 'error');
+}
+
+async function deleteHistoryRow(id, btn) {
+  if (!confirm('Remove this entry from sync history?\nIt will be re-synced on the next cycle (or Import Existing) instead of being skipped as already-done.')) return;
+  btn.disabled = true; btn.textContent = '⟳...';
+  const res = await postJson(`/api/torrent-sync/history/${id}/delete`, {});
+  if (handle401(res)) return;
+  const data = await res.json();
+  if (data.success) { toast('✓ Removed', 'success'); loadSyncHistory(); }
+  else { toast(`✗ ${data.error}`, 'error'); btn.disabled = false; btn.textContent = '✕ remove'; }
 }
 
 async function loadSyncLog() {
