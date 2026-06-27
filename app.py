@@ -41,16 +41,23 @@ def name_matches_excludes(name, patterns):
             return True
     return False
 
+def _normalize_for_match(s):
+    """Collapse '.', '_', '-', and whitespace runs to single spaces, so plain-text
+    ignore entries match dotted release names (e.g. 'Jack Ryan' vs 'Jack.Ryan.S01E01')."""
+    return re.sub(r'[._\-\s]+', ' ', s).strip()
+
 def torrent_name_ignored(name, patterns):
     """Match a torrent's full name against user-configured ignore entries (case-insensitive).
-    Plain text matches as a substring; entries containing glob characters (*?[]) use fnmatch."""
+    Plain text matches as a substring (separator-insensitive); entries containing glob
+    characters (*?[]) use fnmatch against the raw name."""
     name_lower = name.lower()
+    name_normalized = _normalize_for_match(name_lower)
     for pattern in patterns:
         pattern_lower = pattern.lower()
         if any(c in pattern_lower for c in '*?['):
             if fnmatch.fnmatch(name_lower, pattern_lower):
                 return True
-        elif pattern_lower in name_lower:
+        elif _normalize_for_match(pattern_lower) in name_normalized:
             return True
     return False
 CONTAINER_STAGING_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_STAGING_ROOT', '/media/staging')
