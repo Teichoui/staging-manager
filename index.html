@@ -403,7 +403,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
     <div class="settings-section">
       <h3>Ignore List</h3>
-      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">Torrents matching any entry here are never synced. Plain text matches anywhere in the torrent name; use *, ?, or [] for glob patterns.</p>
+      <p style="color:var(--muted);font-size:.78rem;margin-bottom:1rem">Torrents matching any entry here are never synced. Plain text matches anywhere in the torrent name; use * or ? as wildcards. Brackets like [ ] match literally (e.g. "[Ohys-Raws]...").</p>
       <div class="field"><label>Ignored Torrents <span style="color:var(--muted)">(one per line)</span></label><textarea id="ignore_torrents" placeholder="Jack Ryan&#10;Robert Jordan*"></textarea></div>
     </div>
 
@@ -512,14 +512,48 @@ async function postJson(url, data) {
 }
 
 // ── Staging ────────────────────────────────────────────────────────────────
+let ignoreList = [];
+
 async function loadStaging() {
   document.getElementById('staging-content').innerHTML='<div class="loading">Scanning staging...</div>';
-  const res = await fetch('/api/staging');
-  if (handle401(res)) return;
-  stagingData = await res.json();
+  const [stagingRes, settingsRes] = await Promise.all([fetch('/api/staging'), fetch('/api/settings')]);
+  if (handle401(stagingRes) || handle401(settingsRes)) return;
+  stagingData = await stagingRes.json();
+  const cfg = await settingsRes.json();
+  ignoreList = Array.isArray(cfg.ignore_torrents) ? cfg.ignore_torrents : [];
   updateStagingStats();
   renderStaging();
   loadSyncHistory();
+}
+
+// Best-effort client-side mirror of the backend's torrent_name_ignored() matching,
+// so the staging ignore button can reflect live state instead of only its own click.
+function normalizeForMatch(s) {
+  return s.toLowerCase().replace(/[._\-\s]+/g, ' ').trim();
+}
+
+function isNameIgnored(name) {
+  const nameLower = name.toLowerCase();
+  const nameNorm = normalizeForMatch(name);
+  return ignoreList.some(pattern => {
+    const patternLower = pattern.toLowerCase();
+    // Only '*'/'?' are treated as glob here (unlike the backend, which also
+    // treats '[' as a glob trigger via Python's fnmatch). Release names commonly
+    // contain literal brackets, e.g. "[Ohys-Raws] Spy x Family...", and naively
+    // building a RegExp character class from arbitrary user text can throw
+    // (invalid range, unbalanced class). Treating bare brackets as plain text
+    // avoids that; the try/catch below is a second line of defense.
+    if (/[*?]/.test(patternLower)) {
+      try {
+        const re = new RegExp('^' + patternLower.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+        return re.test(nameLower);
+      } catch (e) {
+        return nameNorm.includes(normalizeForMatch(patternLower));
+      }
+    }
+    return nameNorm.includes(normalizeForMatch(patternLower));
+  });
 }
 
 function updateStagingStats() {
@@ -568,13 +602,16 @@ function renderStagingSection(title, folders, cat) {
 function folderRow(f) {
   const n = esc(jsArg(f.name));
   const cat = esc(jsArg(f.category));
+  const ignored = isNameIgnored(f.name);
   return `<div class="folder ${f.has_video?'':'no-video'}">
     <div class="dot ${f.has_video?'ok':'missing'}"></div>
     <span class="folder-name">${esc(f.name)}</span>
     <span class="folder-meta">${f.file_count} files</span>
     <div class="actions">
       ${!f.has_video?`<button class="btn btn-sync" onclick="syncStaging('${n}','${cat}',this)">⬇ sync</button>`:''}
-      <button class="btn btn-action" onclick="addToIgnoreList('${n}',this)">🚫 ignore</button>
+      ${ignored
+        ? `<button class="btn btn-action" disabled title="Already on the ignore list">✓ ignored</button>`
+        : `<button class="btn btn-action" onclick="addToIgnoreList('${n}',this)">🚫 ignore</button>`}
       <button class="btn btn-delete" onclick="deleteStaging('${n}','${cat}',this)">✕ delete</button>
     </div></div>`;
 }
@@ -608,7 +645,8 @@ async function doAddToIgnoreList(name, btn) {
     const data = await saveRes.json();
     if (data.success) {
       toast(`✓ Ignoring: ${name}`, 'success');
-      btn.textContent = '✓ ignored';
+      ignoreList = list;
+      renderStaging();
       // The Settings tab caches its form once loaded; force it to re-read from
       // the server next time so it doesn't post back the stale ignore list.
       tabLoaded['settings'] = false;
@@ -832,7 +870,17 @@ async function saveSettings() {
   const res=await postJson('/api/settings',data);
   if(handle401(res)) return;
   const result=await res.json();
-  if(result.success){ msg.textContent='✓ Saved'; msg.className='save-msg ok'; document.getElementById('new_password').value=''; }
+  if(result.success){
+    msg.textContent='✓ Saved'; msg.className='save-msg ok'; document.getElementById('new_password').value='';
+    if ('ignore_torrents' in data) {
+      // Mirror the backend's newline-split parsing so the Staging tab's ignore
+      // badges reflect this save immediately, even if Staging was already
+      // rendered once before (tabLoaded.staging skips a reload on tab switch).
+      ignoreList = String(data.ignore_torrents).split('\n').map(s=>s.trim()).filter(Boolean);
+      if (currentTab === 'staging') renderStaging();
+      else tabLoaded['staging'] = false;
+    }
+  }
   else { msg.textContent='✗ '+result.error; msg.className='save-msg err'; }
   setTimeout(()=>msg.textContent='',3000);
 }
