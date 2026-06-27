@@ -564,8 +564,34 @@ function folderRow(f) {
     <span class="folder-meta">${f.file_count} files</span>
     <div class="actions">
       ${!f.has_video?`<button class="btn btn-sync" onclick="syncStaging('${n}','${cat}',this)">⬇ sync</button>`:''}
+      <button class="btn btn-action" onclick="addToIgnoreList('${n}',this)">🚫 ignore</button>
       <button class="btn btn-delete" onclick="deleteStaging('${n}','${cat}',this)">✕ delete</button>
     </div></div>`;
+}
+
+async function addToIgnoreList(name, btn) {
+  if (!confirm(`Add "${name}" to the ignore list?\nIt will never be synced again (existing files here are untouched).`)) return;
+  btn.disabled = true; btn.textContent = '⟳...';
+  try {
+    const res = await fetch('/api/settings');
+    if (handle401(res)) return;
+    const cfg = await res.json();
+    const list = Array.isArray(cfg.ignore_torrents) ? cfg.ignore_torrents.slice() : [];
+    if (list.some(p => p.toLowerCase() === name.toLowerCase())) {
+      toast('Already on the ignore list', 'info');
+      btn.disabled = false; btn.textContent = '🚫 ignore';
+      return;
+    }
+    list.push(name);
+    const saveRes = await postJson('/api/settings', {ignore_torrents: list});
+    if (handle401(saveRes)) return;
+    const data = await saveRes.json();
+    if (data.success) { toast(`✓ Ignoring: ${name}`, 'success'); btn.textContent = '✓ ignored'; }
+    else { toast(`✗ ${data.error}`, 'error'); btn.disabled = false; btn.textContent = '🚫 ignore'; }
+  } catch (e) {
+    toast('✗ Failed to update ignore list', 'error');
+    btn.disabled = false; btn.textContent = '🚫 ignore';
+  }
 }
 
 async function syncStaging(name, cat, btn) {
