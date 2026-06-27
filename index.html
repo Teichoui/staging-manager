@@ -579,9 +579,19 @@ function folderRow(f) {
     </div></div>`;
 }
 
+// Serializes concurrent "ignore" clicks so two near-simultaneous adds can't each
+// read the same stale list and overwrite each other's addition on save.
+let ignoreListQueue = Promise.resolve();
+
 async function addToIgnoreList(name, btn) {
   if (!confirm(`Add "${name}" to the ignore list?\nIt will never be synced again (existing files here are untouched).`)) return;
   btn.disabled = true; btn.textContent = '⟳...';
+  const run = ignoreListQueue.then(() => doAddToIgnoreList(name, btn));
+  ignoreListQueue = run.catch(() => {});
+  await run;
+}
+
+async function doAddToIgnoreList(name, btn) {
   try {
     const res = await fetch('/api/settings');
     if (handle401(res)) return;
@@ -596,8 +606,16 @@ async function addToIgnoreList(name, btn) {
     const saveRes = await postJson('/api/settings', {ignore_torrents: list});
     if (handle401(saveRes)) return;
     const data = await saveRes.json();
-    if (data.success) { toast(`✓ Ignoring: ${name}`, 'success'); btn.textContent = '✓ ignored'; }
-    else { toast(`✗ ${data.error}`, 'error'); btn.disabled = false; btn.textContent = '🚫 ignore'; }
+    if (data.success) {
+      toast(`✓ Ignoring: ${name}`, 'success');
+      btn.textContent = '✓ ignored';
+      // The Settings tab caches its form once loaded; force it to re-read from
+      // the server next time so it doesn't post back the stale ignore list.
+      tabLoaded['settings'] = false;
+      if (currentTab === 'settings') loadSettings();
+    } else {
+      toast(`✗ ${data.error}`, 'error'); btn.disabled = false; btn.textContent = '🚫 ignore';
+    }
   } catch (e) {
     toast('✗ Failed to update ignore list', 'error');
     btn.disabled = false; btn.textContent = '🚫 ignore';
