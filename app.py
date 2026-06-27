@@ -30,6 +30,11 @@ SECURE_COOKIES = ENABLE_HTTPS if secure_cookie_env is None else secure_cookie_en
 
 VIDEO_EXTENSIONS = {'.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.ts', '.m2ts'}
 BOOK_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.epub', '.mobi', '.azw3', '.pdf'}
+# Narrower than BOOK_EXTENSIONS: excludes '.mp3'/'.m4a'/'.flac', which are also
+# common plain-music formats. Used only for auto-detecting an unlabeled
+# torrent's category from its files - an unlabeled music torrent shouldn't be
+# routed into bookshelf staging just because it happens to be audio.
+UNAMBIGUOUS_BOOK_EXTENSIONS = {'.m4b', '.epub', '.mobi', '.azw3', '.pdf'}
 RCLONE_BIN = os.environ.get('STAGING_MANAGER_RCLONE_BIN') or shutil.which('rclone') or 'rclone'
 OPENSSL_BIN = os.environ.get('STAGING_MANAGER_OPENSSL_BIN') or shutil.which('openssl') or 'openssl'
 
@@ -474,7 +479,7 @@ def detect_category_from_files(cfg, torrent_hash):
     except Exception as e:
         logger.warning('detect_category_from_files failed for %s: %s', torrent_hash, e)
         return None
-    if exts & BOOK_EXTENSIONS and not (exts & VIDEO_EXTENSIONS):
+    if exts & UNAMBIGUOUS_BOOK_EXTENSIONS and not (exts & VIDEO_EXTENSIONS):
         return 'bookshelf'
     return None
 
