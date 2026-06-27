@@ -537,10 +537,20 @@ function isNameIgnored(name) {
   const nameNorm = normalizeForMatch(name);
   return ignoreList.some(pattern => {
     const patternLower = pattern.toLowerCase();
-    if (/[*?[\]]/.test(patternLower)) {
-      const re = new RegExp('^' + patternLower.replace(/[.+^${}()|\\]/g, '\\$&')
-        .replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
-      return re.test(nameLower);
+    // Only '*'/'?' are treated as glob here (unlike the backend, which also
+    // treats '[' as a glob trigger via Python's fnmatch). Release names commonly
+    // contain literal brackets, e.g. "[Ohys-Raws] Spy x Family...", and naively
+    // building a RegExp character class from arbitrary user text can throw
+    // (invalid range, unbalanced class). Treating bare brackets as plain text
+    // avoids that; the try/catch below is a second line of defense.
+    if (/[*?]/.test(patternLower)) {
+      try {
+        const re = new RegExp('^' + patternLower.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+        return re.test(nameLower);
+      } catch (e) {
+        return nameNorm.includes(normalizeForMatch(patternLower));
+      }
     }
     return nameNorm.includes(normalizeForMatch(patternLower));
   });
