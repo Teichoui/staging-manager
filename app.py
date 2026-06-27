@@ -35,6 +35,11 @@ BOOK_EXTENSIONS = {'.m4b', '.mp3', '.m4a', '.flac', '.epub', '.mobi', '.azw3', '
 # torrent's category from its files - an unlabeled music torrent shouldn't be
 # routed into bookshelf staging just because it happens to be audio.
 UNAMBIGUOUS_BOOK_EXTENSIONS = {'.m4b', '.epub', '.mobi', '.azw3', '.pdf'}
+# '.pdf' alone is a weaker signal than the others here - music releases often
+# ship a booklet/liner-notes PDF alongside .mp3/.flac - so it's split out and
+# only treated as unconditional when no generic audio format is also present.
+ALWAYS_BOOK_EXTENSIONS = UNAMBIGUOUS_BOOK_EXTENSIONS - {'.pdf'}
+GENERIC_AUDIO_EXTENSIONS = BOOK_EXTENSIONS - UNAMBIGUOUS_BOOK_EXTENSIONS
 RCLONE_BIN = os.environ.get('STAGING_MANAGER_RCLONE_BIN') or shutil.which('rclone') or 'rclone'
 OPENSSL_BIN = os.environ.get('STAGING_MANAGER_OPENSSL_BIN') or shutil.which('openssl') or 'openssl'
 
@@ -479,12 +484,17 @@ def detect_category_from_files(cfg, torrent_hash, torrent_name=''):
         client = connect_rtorrent(cfg)
         paths = client.f.multicall(torrent_hash, '', 'f.path=')
         exts = {os.path.splitext(p[0])[1].lower() for p in paths if p and p[0]}
-    except Exception as e:
+    except (ValueError, OSError, xmlrpc.client.Error) as e:
         logger.warning('detect_category_from_files failed for %s: %s', torrent_hash, e)
         return None
     if exts & VIDEO_EXTENSIONS:
         return None
-    if exts & UNAMBIGUOUS_BOOK_EXTENSIONS:
+    if exts & ALWAYS_BOOK_EXTENSIONS:
+        return 'bookshelf'
+    # '.pdf' alone (no other book/audio signal) is still a fine indicator - e.g.
+    # an ebook shipped as a bare PDF - but if generic audio is also present
+    # (.mp3/.flac/.m4a) it's more likely a music release with a booklet PDF.
+    if (exts & {'.pdf'}) and not (exts & GENERIC_AUDIO_EXTENSIONS):
         return 'bookshelf'
     # Generic audio formats (.mp3/.m4a/.flac) are ambiguous on their own - plain
     # music releases use them too - but audiobook release names almost always
@@ -525,13 +535,15 @@ def run_torrent_sync():
                     continue
 
                 # Route by rTorrent label, using the user-configured label per category.
-                # tv_label is checked explicitly too, but anything unmatched (including
-                # an empty label) falls back to checking actual file extensions before
-                # defaulting to tv, since not every download client reliably sets a label.
+                # An explicit tv_label match always wins - the file-extension fallback
+                # is only for unmatched/empty labels, since not every download client
+                # reliably sets one (e.g. Bookshelf often leaves it blank).
                 if cfg.get('bookshelf_label', 'readarr') in t['label']:
                     category = 'bookshelf'
                 elif cfg.get('movies_label', 'radarr') in t['label']:
                     category = 'movies'
+                elif cfg.get('tv_label', 'sonarr') in t['label']:
+                    category = 'tv'
                 else:
                     category = detect_category_from_files(cfg, t['hash'], t['name']) or 'tv'
                 local_base = {'movies': cfg['staging_movies'], 'bookshelf': cfg['staging_bookshelf']}.get(category, cfg['staging_tv'])
@@ -1496,6 +1508,8 @@ def torrent_sync_import_existing():
                     category = 'bookshelf'
                 elif cfg.get('movies_label', 'radarr') in t['label']:
                     category = 'movies'
+                elif cfg.get('tv_label', 'sonarr') in t['label']:
+                    category = 'tv'
                 else:
                     category = detect_category_from_files(cfg, t['hash'], t['name']) or 'tv'
 
