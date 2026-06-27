@@ -512,14 +512,38 @@ async function postJson(url, data) {
 }
 
 // ── Staging ────────────────────────────────────────────────────────────────
+let ignoreList = [];
+
 async function loadStaging() {
   document.getElementById('staging-content').innerHTML='<div class="loading">Scanning staging...</div>';
-  const res = await fetch('/api/staging');
-  if (handle401(res)) return;
-  stagingData = await res.json();
+  const [stagingRes, settingsRes] = await Promise.all([fetch('/api/staging'), fetch('/api/settings')]);
+  if (handle401(stagingRes) || handle401(settingsRes)) return;
+  stagingData = await stagingRes.json();
+  const cfg = await settingsRes.json();
+  ignoreList = Array.isArray(cfg.ignore_torrents) ? cfg.ignore_torrents : [];
   updateStagingStats();
   renderStaging();
   loadSyncHistory();
+}
+
+// Best-effort client-side mirror of the backend's torrent_name_ignored() matching,
+// so the staging ignore button can reflect live state instead of only its own click.
+function normalizeForMatch(s) {
+  return s.toLowerCase().replace(/[._\-\s]+/g, ' ').trim();
+}
+
+function isNameIgnored(name) {
+  const nameLower = name.toLowerCase();
+  const nameNorm = normalizeForMatch(name);
+  return ignoreList.some(pattern => {
+    const patternLower = pattern.toLowerCase();
+    if (/[*?[\]]/.test(patternLower)) {
+      const re = new RegExp('^' + patternLower.replace(/[.+^${}()|\\]/g, '\\$&')
+        .replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+      return re.test(nameLower);
+    }
+    return nameNorm.includes(normalizeForMatch(patternLower));
+  });
 }
 
 function updateStagingStats() {
@@ -568,13 +592,16 @@ function renderStagingSection(title, folders, cat) {
 function folderRow(f) {
   const n = esc(jsArg(f.name));
   const cat = esc(jsArg(f.category));
+  const ignored = isNameIgnored(f.name);
   return `<div class="folder ${f.has_video?'':'no-video'}">
     <div class="dot ${f.has_video?'ok':'missing'}"></div>
     <span class="folder-name">${esc(f.name)}</span>
     <span class="folder-meta">${f.file_count} files</span>
     <div class="actions">
       ${!f.has_video?`<button class="btn btn-sync" onclick="syncStaging('${n}','${cat}',this)">⬇ sync</button>`:''}
-      <button class="btn btn-action" onclick="addToIgnoreList('${n}',this)">🚫 ignore</button>
+      ${ignored
+        ? `<button class="btn btn-action" disabled title="Already on the ignore list">✓ ignored</button>`
+        : `<button class="btn btn-action" onclick="addToIgnoreList('${n}',this)">🚫 ignore</button>`}
       <button class="btn btn-delete" onclick="deleteStaging('${n}','${cat}',this)">✕ delete</button>
     </div></div>`;
 }
@@ -608,7 +635,8 @@ async function doAddToIgnoreList(name, btn) {
     const data = await saveRes.json();
     if (data.success) {
       toast(`✓ Ignoring: ${name}`, 'success');
-      btn.textContent = '✓ ignored';
+      ignoreList = list;
+      renderStaging();
       // The Settings tab caches its form once loaded; force it to re-read from
       // the server next time so it doesn't post back the stale ignore list.
       tabLoaded['settings'] = false;
