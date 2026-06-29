@@ -81,6 +81,12 @@ def torrent_name_ignored(name, patterns):
     return False
 CONTAINER_STAGING_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_STAGING_ROOT', '/media/staging')
 TRUENAS_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_TRUENAS_MEDIA_ROOT', '/mnt/tank/Media')
+# TRUENAS_MEDIA_ROOT is the host-side path used to validate library settings
+# and for TrueNAS ACL (permission-repair) API calls that run on the host.
+# The container only has that directory bind-mounted at CONTAINER_MEDIA_ROOT
+# (README-TRUENAS.md: "reads media/staging paths through /media") - direct
+# os.* calls need the translated path, not the raw stored value.
+CONTAINER_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_MEDIA_ROOT', '/media')
 SEEDBOX_ALLOWED_ROOT = os.environ.get('STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT', '/downloads/Done3')
 ALLOWED_HOSTNAMES = {
     h.strip().lower() for h in os.environ.get(
@@ -180,6 +186,15 @@ def validate_managed_path(path, base, field_name, strict=True):
     ok = is_strict_subpath(path, base) if strict else is_subpath(path, base)
     if not ok:
         raise ValueError(f'{field_name} must stay under {base}')
+    return path
+
+def to_container_media_path(path):
+    """Translate a host-style TRUENAS_MEDIA_ROOT path (as stored in settings,
+    e.g. /mnt/tank/Media/TV) into the actual container filesystem path under
+    CONTAINER_MEDIA_ROOT, for code that does real file I/O rather than calling
+    the TrueNAS host API."""
+    if path.startswith(TRUENAS_MEDIA_ROOT):
+        return CONTAINER_MEDIA_ROOT + path[len(TRUENAS_MEDIA_ROOT):]
     return path
 
 def validate_service_url(url, field_name):
@@ -1530,7 +1545,7 @@ def torrent_sync_import_existing():
                 if is_complete:
                     found_path = staging_path
                 elif library_base:
-                    found_path = find_in_library(library_base, t['name'], category)
+                    found_path = find_in_library(to_container_media_path(library_base), t['name'], category)
 
                 if found_path:
                     cursor = conn.execute(
