@@ -97,6 +97,7 @@ DEFAULT_CONFIG = {
     "staging_bookshelf": "/media/staging/bookshelf",
     "tv_library": "/mnt/tank/Media/TV",
     "movies_library": "/mnt/tank/Media/Movies",
+    "audiobooks_library": "/mnt/tank/Media/Audiobooks",
     "staging_root": "/mnt/tank/Media/staging",
     "rclone_remote": "seedbox",
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
@@ -657,6 +658,8 @@ def run_torrent_sync():
                         'torrent sync failed: name=%s returncode=%d log=%s',
                         t['name'], result.returncode, rclone_tail[:500])
 
+        organize_bookshelf_staging(cfg)
+
         torrent_sync_state['last_sync'] = time.time()
         torrent_sync_state['status'] = 'idle'
         torrent_sync_state['active_torrent'] = None
@@ -841,6 +844,7 @@ def save_settings():
         cfg['staging_bookshelf'] = validate_managed_path(cfg['staging_bookshelf'], CONTAINER_STAGING_ROOT, 'staging_bookshelf')
         cfg['tv_library'] = validate_managed_path(cfg['tv_library'], TRUENAS_MEDIA_ROOT, 'tv_library')
         cfg['movies_library'] = validate_managed_path(cfg['movies_library'], TRUENAS_MEDIA_ROOT, 'movies_library')
+        cfg['audiobooks_library'] = validate_managed_path(cfg['audiobooks_library'], TRUENAS_MEDIA_ROOT, 'audiobooks_library')
         cfg['staging_root'] = validate_managed_path(cfg['staging_root'], TRUENAS_MEDIA_ROOT, 'staging_root')
         cfg['sonarr_url'] = validate_service_url(cfg['sonarr_url'], 'sonarr_url')
         cfg['radarr_url'] = validate_service_url(cfg['radarr_url'], 'radarr_url')
@@ -894,6 +898,79 @@ def has_book(path):
         return False
     except OSError:
         return False
+
+def sanitize_path_component(name):
+    """Reject anything that could escape the intended destination directory
+    when building a path from user/torrent-supplied text (author, title)."""
+    name = name.strip()
+    if not name or name in ('.', '..') or '/' in name or '\\' in name:
+        raise ValueError(f'unsafe path component: {name!r}')
+    return name
+
+def parse_author_title(folder_name):
+    """Split a Bookshelf-style folder name "Author Name - Book Title (Unabridged)"
+    into (author, title) on the first " - ". Returns None if it doesn't match
+    that pattern (e.g. no separator), so the caller can leave it alone rather
+    than guess."""
+    if ' - ' not in folder_name:
+        return None
+    author, title = folder_name.split(' - ', 1)
+    author, title = author.strip(), title.strip()
+    if not author or not title:
+        return None
+    return author, title
+
+def organize_bookshelf_staging(cfg):
+    """Move completed audiobook folders out of bookshelf staging into the
+    Author/Title structure Audiobookshelf expects, e.g.:
+      staging_bookshelf/Author - Title (Unabridged)/Title (Unabridged).m4b
+      -> audiobooks_library/Author/Title (Unabridged)/Title (Unabridged).m4b
+    Runs at the end of every sync cycle so both freshly-synced and
+    pre-existing staging folders get organized without separate tracking -
+    a folder that's already been moved simply won't be in staging anymore."""
+    staging_base = cfg.get('staging_bookshelf', '')
+    library_base = cfg.get('audiobooks_library', '')
+    if not staging_base or not library_base or not os.path.isdir(staging_base):
+        return
+    try:
+        entries = os.listdir(staging_base)
+    except OSError as e:
+        logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
+        return
+    for name in entries:
+        src = os.path.join(staging_base, name)
+        if not os.path.isdir(src) or not has_book(src):
+            continue  # not a folder, or still copying / no book files yet
+        parsed = parse_author_title(name)
+        if not parsed:
+            logger.warning('organize_bookshelf_staging: could not parse author/title from "%s" - leaving in place', name)
+            continue
+        try:
+            author = sanitize_path_component(parsed[0])
+            title = sanitize_path_component(parsed[1])
+        except ValueError as e:
+            logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
+            continue
+        dest_dir = os.path.join(library_base, author, title)
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            moved_any = False
+            for fname in os.listdir(src):
+                fpath = os.path.join(src, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                if os.path.splitext(fname)[1].lower() in BOOK_EXTENSIONS:
+                    shutil.move(fpath, os.path.join(dest_dir, fname))
+                    moved_any = True
+                else:
+                    os.remove(fpath)  # drop nfo/cue/jpg and other extras
+            if moved_any:
+                os.rmdir(src)  # only succeeds once the folder is empty
+                logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
+            else:
+                logger.warning('organize_bookshelf_staging: no book files found to move for "%s"', name)
+        except OSError as e:
+            logger.warning('organize_bookshelf_staging: failed to organize "%s": %s', name, e)
 
 def scan_staging(base, category):
     # "has_video" doubles as the generic ready/complete flag for every category —
