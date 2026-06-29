@@ -1398,13 +1398,15 @@ def fix_permissions():
         return jsonify({'error': 'Unauthorized'}), 401
     cfg = load_config()
     data = request.json or {}
-    target = data.get('target', 'all')  # 'tv', 'movies', 'staging', 'all'
+    target = data.get('target', 'all')  # 'tv', 'movies', 'staging', 'audiobooks', 'books', 'all'
 
     try:
         paths = {
             'tv': validate_managed_path(cfg.get('tv_library', '/mnt/tank/Media/TV'), TRUENAS_MEDIA_ROOT, 'tv_library'),
             'movies': validate_managed_path(cfg.get('movies_library', '/mnt/tank/Media/Movies'), TRUENAS_MEDIA_ROOT, 'movies_library'),
-            'staging': validate_managed_path(cfg.get('staging_root', '/mnt/tank/Media/staging'), TRUENAS_MEDIA_ROOT, 'staging_root')
+            'staging': validate_managed_path(cfg.get('staging_root', '/mnt/tank/Media/staging'), TRUENAS_MEDIA_ROOT, 'staging_root'),
+            'audiobooks': validate_managed_path(cfg.get('audiobooks_library', '/mnt/tank/Media/Audiobooks'), TRUENAS_MEDIA_ROOT, 'audiobooks_library'),
+            'books': validate_managed_path(cfg.get('books_library', '/mnt/tank/Media/Books'), TRUENAS_MEDIA_ROOT, 'books_library'),
         }
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
