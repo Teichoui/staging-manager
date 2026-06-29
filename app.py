@@ -104,6 +104,7 @@ DEFAULT_CONFIG = {
     "tv_library": "/mnt/tank/Media/TV",
     "movies_library": "/mnt/tank/Media/Movies",
     "audiobooks_library": "/mnt/tank/Media/Audiobooks",
+    "books_library": "/mnt/tank/Media/Books",
     "staging_root": "/mnt/tank/Media/staging",
     "rclone_remote": "seedbox",
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
@@ -860,6 +861,7 @@ def save_settings():
         cfg['tv_library'] = validate_managed_path(cfg['tv_library'], TRUENAS_MEDIA_ROOT, 'tv_library')
         cfg['movies_library'] = validate_managed_path(cfg['movies_library'], TRUENAS_MEDIA_ROOT, 'movies_library')
         cfg['audiobooks_library'] = validate_managed_path(cfg['audiobooks_library'], TRUENAS_MEDIA_ROOT, 'audiobooks_library')
+        cfg['books_library'] = validate_managed_path(cfg['books_library'], TRUENAS_MEDIA_ROOT, 'books_library')
         cfg['staging_root'] = validate_managed_path(cfg['staging_root'], TRUENAS_MEDIA_ROOT, 'staging_root')
         cfg['sonarr_url'] = validate_service_url(cfg['sonarr_url'], 'sonarr_url')
         cfg['radarr_url'] = validate_service_url(cfg['radarr_url'], 'radarr_url')
@@ -935,6 +937,24 @@ def parse_author_title(folder_name):
         return None
     return author, title
 
+def _classify_book_entry(src):
+    """Return 'audio' or 'ebook' based on which extensions are present in src
+    (a file path or a directory). Audio takes priority — an audiobook often
+    includes a PDF booklet alongside the .m4b/.mp3 files."""
+    audio_exts = {'.m4b', '.mp3', '.m4a', '.flac'}
+    ebook_exts = {'.epub', '.mobi', '.azw3', '.pdf'}
+    has_ebook = False
+    paths = [src] if os.path.isfile(src) else [
+        os.path.join(dp, f) for dp, _, fns in os.walk(src) for f in fns
+    ]
+    for fpath in paths:
+        ext = os.path.splitext(fpath)[1].lower()
+        if ext in audio_exts:
+            return 'audio'
+        if ext in ebook_exts:
+            has_ebook = True
+    return 'ebook' if has_ebook else None
+
 def _move_book_file(src_file, dest_file):
     """Move a single book file into place, refusing to clobber an existing
     destination (e.g. from a retried/duplicate sync). Returns True if moved."""
@@ -949,7 +969,16 @@ def organize_bookshelf_staging(cfg):
     """Move completed audiobook items out of bookshelf staging into the
     Author/Title structure Audiobookshelf expects, e.g.:
       staging_bookshelf/Author - Title (Unabridged)/Title (Unabridged).m4b
+      staging_bookshelf/Author - Title (Unabridged)/Title (Unabridged).m4b
       -> audiobooks_library/Author/Title (Unabridged)/Title (Unabridged).m4b
+      staging_bookshelf/Author - Some Novel/Some Novel.epub
+      -> books_library/Author/Some Novel/Some Novel.epub
+    Routes to audiobooks_library (Audiobookshelf) or books_library (Kavita)
+    based on file extensions: audio formats (.m4b/.mp3/.m4a/.flac) go to
+    audiobooks_library; ebook formats (.epub/.mobi/.azw3/.pdf) go to
+    books_library. Audio takes priority when both are present (e.g. an
+    audiobook with a companion PDF booklet).
+
     Runs at the end of every sync cycle so both freshly-synced and
     pre-existing staging items get organized without separate tracking - an
     item that's already been moved simply won't be in staging anymore.
@@ -958,11 +987,13 @@ def organize_bookshelf_staging(cfg):
     under CD1/CD2/etc) and single-file torrents (copied directly as a bare
     file via copyto, per the is_multi_file handling in run_torrent_sync)."""
     staging_base = cfg.get('staging_bookshelf', '')
-    # audiobooks_library is validated/displayed as a TrueNAS host path (like
-    # tv_library/movies_library), but real file I/O needs the container's
-    # actual mount point - see to_container_media_path().
-    library_base = to_container_media_path(cfg.get('audiobooks_library', ''))
-    if not staging_base or not library_base or not os.path.isdir(staging_base):
+    # Both library paths are validated/stored as TrueNAS host paths - translate
+    # to the actual container mount point before any real file I/O.
+    audiobooks_lib = to_container_media_path(cfg.get('audiobooks_library', ''))
+    books_lib = to_container_media_path(cfg.get('books_library', ''))
+    if not staging_base or not os.path.isdir(staging_base):
+        return
+    if not audiobooks_lib and not books_lib:
         return
     # A manual /api/sync copy (sync_lock) runs independently of the scheduled
     # torrent sync (torrent_sync_lock) that calls this function, so a manual
@@ -993,6 +1024,17 @@ def organize_bookshelf_staging(cfg):
                 name_for_parsing = name
             else:
                 continue
+            book_type = _classify_book_entry(src)
+            if book_type == 'audio':
+                dest_lib = audiobooks_lib
+            elif book_type == 'ebook':
+                dest_lib = books_lib
+            else:
+                logger.warning('organize_bookshelf_staging: no recognisable book files in "%s" - leaving in place', name)
+                continue
+            if not dest_lib:
+                logger.warning('organize_bookshelf_staging: no library configured for %s "%s" - leaving in place', book_type, name)
+                continue
             parsed = parse_author_title(name_for_parsing)
             if not parsed:
                 logger.warning('organize_bookshelf_staging: could not parse author/title from "%s" - leaving in place', name)
@@ -1003,7 +1045,7 @@ def organize_bookshelf_staging(cfg):
             except ValueError as e:
                 logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
                 continue
-            dest_dir = os.path.join(library_base, author, title)
+            dest_dir = os.path.join(dest_lib, author, title)
             try:
                 os.makedirs(dest_dir, exist_ok=True)
                 if is_file:
@@ -1681,7 +1723,7 @@ def torrent_sync_import_existing():
                 if is_complete:
                     found_path = staging_path
                 elif library_base:
-                    found_path = find_in_library(library_base, t['name'], category)
+                    found_path = find_in_library(to_container_media_path(library_base), t['name'], category)
 
                 if found_path:
                     cursor = conn.execute(

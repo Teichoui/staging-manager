@@ -391,6 +391,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
       <div class="field"><label>TrueNAS TV Library</label><input type="text" id="tv_library" placeholder="/mnt/tank/Media/TV" /></div>
       <div class="field"><label>TrueNAS Movies Library</label><input type="text" id="movies_library" placeholder="/mnt/tank/Media/Movies" /></div>
       <div class="field"><label>TrueNAS Audiobooks Library</label><input type="text" id="audiobooks_library" placeholder="/mnt/tank/Media/Audiobooks" /></div>
+      <div class="field"><label>TrueNAS Books Library (Kavita)</label><input type="text" id="books_library" placeholder="/mnt/tank/Media/Books" /></div>
       <div class="field"><label>TrueNAS Staging Root</label><input type="text" id="staging_root" placeholder="/mnt/tank/Media/staging" /></div>
     </div>
 
@@ -826,7 +827,7 @@ async function loadSettings() {
     'rclone_transfers','rclone_excludes','ignore_torrents',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
-    'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','audiobooks_library','staging_root',
+    'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','audiobooks_library','books_library','staging_root',
     'tv_label','movies_label','bookshelf_label',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   fields.forEach(f=>{
@@ -855,7 +856,7 @@ async function saveSettings() {
     'rclone_transfers','rclone_excludes','ignore_torrents',
     'rtorrent_url','rtorrent_user','rtorrent_password',
     'ultracc_host','ultracc_user','ultracc_ssh_key','ultracc_ssh_password','ultracc_ssh_port','sync_interval',
-    'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','audiobooks_library','staging_root',
+    'staging_tv','staging_movies','staging_bookshelf','tv_library','movies_library','audiobooks_library','books_library','staging_root',
     'tv_label','movies_label','bookshelf_label',
     'app_uid','app_gid','session_timeout','max_login_attempts','lockout_minutes'];
   const data={};
