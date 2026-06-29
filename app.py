@@ -955,17 +955,32 @@ def organize_bookshelf_staging(cfg):
         try:
             os.makedirs(dest_dir, exist_ok=True)
             moved_any = False
-            for fname in os.listdir(src):
-                fpath = os.path.join(src, fname)
-                if not os.path.isfile(fpath):
-                    continue
-                if os.path.splitext(fname)[1].lower() in BOOK_EXTENSIONS:
-                    shutil.move(fpath, os.path.join(dest_dir, fname))
-                    moved_any = True
+            # Walk recursively (matching has_book()'s own traversal) - multi-disc
+            # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
+            # top-level-only listing would miss them entirely.
+            for dirpath, _, filenames in os.walk(src):
+                rel_dir = os.path.relpath(dirpath, src)
+                safe_rel = None
+                if rel_dir == '.':
+                    safe_rel = ''
                 else:
-                    os.remove(fpath)  # drop nfo/cue/jpg and other extras
+                    try:
+                        safe_rel = os.path.join(*(sanitize_path_component(p) for p in rel_dir.split(os.sep)))
+                    except ValueError:
+                        logger.warning('organize_bookshelf_staging: skipping unsafe nested path "%s" in "%s"', rel_dir, name)
+                        continue
+                for fname in filenames:
+                    if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
+                        continue
+                    dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                    os.makedirs(dest_subdir, exist_ok=True)
+                    shutil.move(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname))
+                    moved_any = True
             if moved_any:
-                os.rmdir(src)  # only succeeds once the folder is empty
+                # Only delete the leftover extras (nfo/cue/jpg/etc.) once we've
+                # confirmed real book content actually made it to the library -
+                # never wipe the staging folder on a failed/partial move.
+                shutil.rmtree(src, ignore_errors=True)
                 logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
             else:
                 logger.warning('organize_bookshelf_staging: no book files found to move for "%s"', name)
