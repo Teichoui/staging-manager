@@ -81,6 +81,12 @@ def torrent_name_ignored(name, patterns):
     return False
 CONTAINER_STAGING_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_STAGING_ROOT', '/media/staging')
 TRUENAS_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_TRUENAS_MEDIA_ROOT', '/mnt/tank/Media')
+# TRUENAS_MEDIA_ROOT is the host-side path used to validate tv_library/movies_library/
+# audiobooks_library and for TrueNAS ACL (permission-repair) API calls, which run on
+# the host itself. The container only has that same host directory bind-mounted at
+# CONTAINER_MEDIA_ROOT (see README-TRUENAS.md: "reads media/staging paths through
+# /media") - direct os.* calls need the translated path, not the raw stored value.
+CONTAINER_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_MEDIA_ROOT', '/media')
 SEEDBOX_ALLOWED_ROOT = os.environ.get('STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT', '/downloads/Done3')
 ALLOWED_HOSTNAMES = {
     h.strip().lower() for h in os.environ.get(
@@ -181,6 +187,15 @@ def validate_managed_path(path, base, field_name, strict=True):
     ok = is_strict_subpath(path, base) if strict else is_subpath(path, base)
     if not ok:
         raise ValueError(f'{field_name} must stay under {base}')
+    return path
+
+def to_container_media_path(path):
+    """Translate a host-style TRUENAS_MEDIA_ROOT path (as stored in settings,
+    e.g. /mnt/tank/Media/Audiobooks) into the actual container filesystem path
+    under CONTAINER_MEDIA_ROOT, for code that does real file I/O rather than
+    calling the TrueNAS host API."""
+    if path.startswith(TRUENAS_MEDIA_ROOT):
+        return CONTAINER_MEDIA_ROOT + path[len(TRUENAS_MEDIA_ROOT):]
     return path
 
 def validate_service_url(url, field_name):
@@ -920,72 +935,116 @@ def parse_author_title(folder_name):
         return None
     return author, title
 
+def _move_book_file(src_file, dest_file):
+    """Move a single book file into place, refusing to clobber an existing
+    destination (e.g. from a retried/duplicate sync). Returns True if moved."""
+    if os.path.exists(dest_file):
+        logger.warning('organize_bookshelf_staging: destination already exists, '
+                        'leaving source in place: %s', dest_file)
+        return False
+    shutil.move(src_file, dest_file)
+    return True
+
 def organize_bookshelf_staging(cfg):
-    """Move completed audiobook folders out of bookshelf staging into the
+    """Move completed audiobook items out of bookshelf staging into the
     Author/Title structure Audiobookshelf expects, e.g.:
       staging_bookshelf/Author - Title (Unabridged)/Title (Unabridged).m4b
       -> audiobooks_library/Author/Title (Unabridged)/Title (Unabridged).m4b
     Runs at the end of every sync cycle so both freshly-synced and
-    pre-existing staging folders get organized without separate tracking -
-    a folder that's already been moved simply won't be in staging anymore."""
+    pre-existing staging items get organized without separate tracking - an
+    item that's already been moved simply won't be in staging anymore.
+
+    Handles both multi-file torrents (a directory, possibly with files nested
+    under CD1/CD2/etc) and single-file torrents (copied directly as a bare
+    file via copyto, per the is_multi_file handling in run_torrent_sync)."""
     staging_base = cfg.get('staging_bookshelf', '')
-    library_base = cfg.get('audiobooks_library', '')
+    # audiobooks_library is validated/displayed as a TrueNAS host path (like
+    # tv_library/movies_library), but real file I/O needs the container's
+    # actual mount point - see to_container_media_path().
+    library_base = to_container_media_path(cfg.get('audiobooks_library', ''))
     if not staging_base or not library_base or not os.path.isdir(staging_base):
         return
-    try:
-        entries = os.listdir(staging_base)
-    except OSError as e:
-        logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
+    # A manual /api/sync copy (sync_lock) runs independently of the scheduled
+    # torrent sync (torrent_sync_lock) that calls this function, so a manual
+    # resync of a bookshelf item could still be mid-write here. Defer this
+    # entire pass to the next cycle rather than risk moving a partial file.
+    if not sync_lock.acquire(blocking=False):
+        logger.info('organize_bookshelf_staging: skipped - a manual sync is in progress')
         return
-    for name in entries:
-        src = os.path.join(staging_base, name)
-        if not os.path.isdir(src) or not has_book(src):
-            continue  # not a folder, or still copying / no book files yet
-        parsed = parse_author_title(name)
-        if not parsed:
-            logger.warning('organize_bookshelf_staging: could not parse author/title from "%s" - leaving in place', name)
-            continue
+    try:
         try:
-            author = sanitize_path_component(parsed[0])
-            title = sanitize_path_component(parsed[1])
-        except ValueError as e:
-            logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
-            continue
-        dest_dir = os.path.join(library_base, author, title)
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            moved_any = False
-            # Walk recursively (matching has_book()'s own traversal) - multi-disc
-            # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
-            # top-level-only listing would miss them entirely.
-            for dirpath, _, filenames in os.walk(src):
-                rel_dir = os.path.relpath(dirpath, src)
-                safe_rel = None
-                if rel_dir == '.':
-                    safe_rel = ''
-                else:
-                    try:
-                        safe_rel = os.path.join(*(sanitize_path_component(p) for p in rel_dir.split(os.sep)))
-                    except ValueError:
-                        logger.warning('organize_bookshelf_staging: skipping unsafe nested path "%s" in "%s"', rel_dir, name)
-                        continue
-                for fname in filenames:
-                    if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
-                        continue
-                    dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
-                    os.makedirs(dest_subdir, exist_ok=True)
-                    shutil.move(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname))
-                    moved_any = True
-            if moved_any:
-                # Only delete the leftover extras (nfo/cue/jpg/etc.) once we've
-                # confirmed real book content actually made it to the library -
-                # never wipe the staging folder on a failed/partial move.
-                shutil.rmtree(src, ignore_errors=True)
-                logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
-            else:
-                logger.warning('organize_bookshelf_staging: no book files found to move for "%s"', name)
+            entries = os.listdir(staging_base)
         except OSError as e:
-            logger.warning('organize_bookshelf_staging: failed to organize "%s": %s', name, e)
+            logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
+            return
+        for name in entries:
+            src = os.path.join(staging_base, name)
+            is_file = os.path.isfile(src)
+            if is_file:
+                # Single-file torrent (run_torrent_sync uses copyto for these) -
+                # the bare filename is both the torrent's identity and the only
+                # content to move; strip the extension before parsing author/title.
+                if os.path.splitext(name)[1].lower() not in BOOK_EXTENSIONS:
+                    continue
+                name_for_parsing = os.path.splitext(name)[0]
+            elif os.path.isdir(src):
+                if not has_book(src):
+                    continue  # still copying, or genuinely no book files yet
+                name_for_parsing = name
+            else:
+                continue
+            parsed = parse_author_title(name_for_parsing)
+            if not parsed:
+                logger.warning('organize_bookshelf_staging: could not parse author/title from "%s" - leaving in place', name)
+                continue
+            try:
+                author = sanitize_path_component(parsed[0])
+                title = sanitize_path_component(parsed[1])
+            except ValueError as e:
+                logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
+                continue
+            dest_dir = os.path.join(library_base, author, title)
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                if is_file:
+                    moved = _move_book_file(src, os.path.join(dest_dir, name))
+                    if moved:
+                        logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
+                    continue
+                moved_any = False
+                # Walk recursively (matching has_book()'s own traversal) - multi-disc
+                # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
+                # top-level-only listing would miss them entirely.
+                for dirpath, _, filenames in os.walk(src):
+                    rel_dir = os.path.relpath(dirpath, src)
+                    safe_rel = None
+                    if rel_dir == '.':
+                        safe_rel = ''
+                    else:
+                        try:
+                            safe_rel = os.path.join(*(sanitize_path_component(p) for p in rel_dir.split(os.sep)))
+                        except ValueError:
+                            logger.warning('organize_bookshelf_staging: skipping unsafe nested path "%s" in "%s"', rel_dir, name)
+                            continue
+                    for fname in filenames:
+                        if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
+                            continue
+                        dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                        os.makedirs(dest_subdir, exist_ok=True)
+                        if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname)):
+                            moved_any = True
+                if moved_any:
+                    # Only delete the leftover extras (nfo/cue/jpg/etc.) once we've
+                    # confirmed real book content actually made it to the library -
+                    # never wipe the staging folder on a failed/partial move.
+                    shutil.rmtree(src, ignore_errors=True)
+                    logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
+                else:
+                    logger.warning('organize_bookshelf_staging: no book files moved for "%s"', name)
+            except OSError as e:
+                logger.warning('organize_bookshelf_staging: failed to organize "%s": %s', name, e)
+    finally:
+        sync_lock.release()
 
 def scan_staging(base, category):
     # "has_video" doubles as the generic ready/complete flag for every category —
