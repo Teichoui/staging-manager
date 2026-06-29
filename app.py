@@ -965,27 +965,16 @@ def _move_book_file(src_file, dest_file):
     shutil.move(src_file, dest_file)
     return True
 
-def organize_bookshelf_staging(cfg):
-    """Move completed audiobook items out of bookshelf staging into the
-    Author/Title structure Audiobookshelf expects, e.g.:
-      staging_bookshelf/Author - Title (Unabridged)/Title (Unabridged).m4b
-      staging_bookshelf/Author - Title (Unabridged)/Title (Unabridged).m4b
-      -> audiobooks_library/Author/Title (Unabridged)/Title (Unabridged).m4b
-      staging_bookshelf/Author - Some Novel/Some Novel.epub
-      -> books_library/Author/Some Novel/Some Novel.epub
-    Routes to audiobooks_library (Audiobookshelf) or books_library (Kavita)
-    based on file extensions: audio formats (.m4b/.mp3/.m4a/.flac) go to
-    audiobooks_library; ebook formats (.epub/.mobi/.azw3/.pdf) go to
-    books_library. Audio takes priority when both are present (e.g. an
-    audiobook with a companion PDF booklet).
-
-    Runs at the end of every sync cycle so both freshly-synced and
-    pre-existing staging items get organized without separate tracking - an
-    item that's already been moved simply won't be in staging anymore.
-
-    Handles both multi-file torrents (a directory, possibly with files nested
-    under CD1/CD2/etc) and single-file torrents (copied directly as a bare
-    file via copyto, per the is_multi_file handling in run_torrent_sync)."""
+def _do_organize_bookshelf_staging(cfg):
+    """Core organize logic — caller must already hold sync_lock.
+    Routes completed bookshelf staging items to audiobooks_library (Audiobookshelf)
+    or books_library (Kavita) based on file extensions:
+      staging_bookshelf/Author - Title (Unabridged)/track.m4b
+        -> audiobooks_library/Author/Title (Unabridged)/track.m4b
+      staging_bookshelf/Author - Some Novel/book.epub
+        -> books_library/Author/Some Novel/book.epub
+    Audio formats (.m4b/.mp3/.m4a/.flac) take priority over ebook formats
+    (.epub/.mobi/.azw3/.pdf) when both are present."""
     staging_base = cfg.get('staging_bookshelf', '')
     # Both library paths are validated/stored as TrueNAS host paths - translate
     # to the actual container mount point before any real file I/O.
@@ -995,20 +984,12 @@ def organize_bookshelf_staging(cfg):
         return
     if not audiobooks_lib and not books_lib:
         return
-    # A manual /api/sync copy (sync_lock) runs independently of the scheduled
-    # torrent sync (torrent_sync_lock) that calls this function, so a manual
-    # resync of a bookshelf item could still be mid-write here. Defer this
-    # entire pass to the next cycle rather than risk moving a partial file.
-    if not sync_lock.acquire(blocking=False):
-        logger.info('organize_bookshelf_staging: skipped - a manual sync is in progress')
-        return
     try:
-        try:
-            entries = os.listdir(staging_base)
-        except OSError as e:
-            logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
-            return
-        for name in entries:
+        entries = os.listdir(staging_base)
+    except OSError as e:
+        logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
+        return
+    for name in entries:
             src = os.path.join(staging_base, name)
             is_file = os.path.isfile(src)
             if is_file:
@@ -1054,6 +1035,7 @@ def organize_bookshelf_staging(cfg):
                         logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
                     continue
                 moved_any = False
+                skipped_any = False  # True if any dest already existed
                 # Walk recursively (matching has_book()'s own traversal) - multi-disc
                 # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
                 # top-level-only listing would miss them entirely.
@@ -1075,16 +1057,31 @@ def organize_bookshelf_staging(cfg):
                         os.makedirs(dest_subdir, exist_ok=True)
                         if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname)):
                             moved_any = True
-                if moved_any:
-                    # Only delete the leftover extras (nfo/cue/jpg/etc.) once we've
-                    # confirmed real book content actually made it to the library -
-                    # never wipe the staging folder on a failed/partial move.
+                        else:
+                            skipped_any = True
+                if moved_any and not skipped_any:
+                    # All book files moved — safe to remove staging folder and extras.
                     shutil.rmtree(src, ignore_errors=True)
                     logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
+                elif moved_any:
+                    # Partial move: some destinations already existed. Leave staging
+                    # folder intact so nothing is lost — resolve the library duplicate
+                    # manually, then the next cycle will retry the remaining files.
+                    logger.warning('organize_bookshelf_staging: partial move for "%s" - some files already at destination, staging folder kept', name)
                 else:
                     logger.warning('organize_bookshelf_staging: no book files moved for "%s"', name)
             except OSError as e:
                 logger.warning('organize_bookshelf_staging: failed to organize "%s": %s', name, e)
+
+def organize_bookshelf_staging(cfg):
+    """Acquire sync_lock then run _do_organize_bookshelf_staging.
+    Called by the scheduled torrent sync. Use _do_organize_bookshelf_staging
+    directly when the caller already holds sync_lock (e.g. sync_folder)."""
+    if not sync_lock.acquire(blocking=False):
+        logger.info('organize_bookshelf_staging: skipped - a manual sync is in progress')
+        return
+    try:
+        _do_organize_bookshelf_staging(cfg)
     finally:
         sync_lock.release()
 
@@ -1175,6 +1172,11 @@ def sync_folder():
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # nosec B603
         if r.returncode == 0:
             logger.info('sync success category=%s name=%s', category, name)
+            if category == 'bookshelf':
+                # sync_lock is already held here, so call the inner function
+                # directly rather than going through organize_bookshelf_staging
+                # (which would try to acquire the lock and immediately defer).
+                _do_organize_bookshelf_staging(cfg)
         else:
             logger.warning('sync failed category=%s name=%s stderr=%s', category, name, r.stderr.strip())
         return jsonify({'success': r.returncode==0, 'message': 'Sync finished' if r.returncode == 0 else 'Sync failed'})
