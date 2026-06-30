@@ -117,15 +117,15 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 .btn-browse { background:var(--bg2); border:1px solid var(--border); border-radius:5px; color:var(--muted); font-size:.75rem; padding:.45rem .75rem; cursor:pointer; white-space:nowrap; }
 .btn-browse:hover { border-color:var(--accent); color:var(--text); }
 #path-browser-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:1000; display:flex; align-items:center; justify-content:center; }
-#path-browser { background:var(--bg2); border:1px solid var(--border); border-radius:8px; width:min(520px,92vw); max-height:70vh; display:flex; flex-direction:column; overflow:hidden; }
-#pb-header { display:flex; align-items:center; justify-content:space-between; padding:.75rem 1rem; border-bottom:1px solid var(--border); font-size:.85rem; font-weight:600; }
+#path-browser { background:var(--surface2); border:1px solid var(--border); border-radius:8px; width:min(520px,92vw); max-height:70vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,.8); }
+#pb-header { display:flex; align-items:center; justify-content:space-between; padding:.75rem 1rem; border-bottom:1px solid var(--border); font-size:.85rem; font-weight:600; background:var(--surface); }
 #pb-path { padding:.5rem 1rem; font-size:.7rem; color:var(--muted); font-family:'JetBrains Mono',monospace; word-break:break-all; border-bottom:1px solid var(--border); background:var(--bg); }
-#pb-list { overflow-y:auto; flex:1; padding:.4rem 0; }
+#pb-list { overflow-y:auto; flex:1; padding:.4rem 0; background:var(--surface2); }
 .pb-item { display:flex; align-items:center; gap:.6rem; padding:.5rem 1rem; cursor:pointer; font-size:.8rem; color:var(--text); }
-.pb-item:hover { background:var(--bg); }
+.pb-item:hover { background:var(--surface); }
 .pb-item-icon { color:var(--muted); font-size:.9rem; }
 .pb-empty { padding:1rem; color:var(--muted); font-size:.8rem; text-align:center; }
-#pb-footer { display:flex; gap:.5rem; justify-content:flex-end; padding:.75rem 1rem; border-top:1px solid var(--border); }
+#pb-footer { display:flex; gap:.5rem; justify-content:flex-end; padding:.75rem 1rem; border-top:1px solid var(--border); background:var(--surface); }
 .check-row input { width:auto; }
 .test-row { display:flex; gap:.5rem; align-items:flex-end; }
 .test-row .field { flex:1; margin-bottom:0; }
