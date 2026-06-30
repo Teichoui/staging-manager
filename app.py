@@ -81,6 +81,12 @@ def torrent_name_ignored(name, patterns):
     return False
 CONTAINER_STAGING_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_STAGING_ROOT', '/media/staging')
 TRUENAS_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_TRUENAS_MEDIA_ROOT', '/mnt/tank/Media')
+# TRUENAS_MEDIA_ROOT is the host-side path used to validate tv_library/movies_library/
+# audiobooks_library and for TrueNAS ACL (permission-repair) API calls, which run on
+# the host itself. The container only has that same host directory bind-mounted at
+# CONTAINER_MEDIA_ROOT (see README-TRUENAS.md: "reads media/staging paths through
+# /media") - direct os.* calls need the translated path, not the raw stored value.
+CONTAINER_MEDIA_ROOT = os.environ.get('STAGING_MANAGER_CONTAINER_MEDIA_ROOT', '/media')
 SEEDBOX_ALLOWED_ROOT = os.environ.get('STAGING_MANAGER_SEEDBOX_ALLOWED_ROOT', '/downloads/Done3')
 ALLOWED_HOSTNAMES = {
     h.strip().lower() for h in os.environ.get(
@@ -97,6 +103,8 @@ DEFAULT_CONFIG = {
     "staging_bookshelf": "/media/staging/bookshelf",
     "tv_library": "/mnt/tank/Media/TV",
     "movies_library": "/mnt/tank/Media/Movies",
+    "audiobooks_library": "/mnt/tank/Media/Audiobooks",
+    "books_library": "/mnt/tank/Media/Books",
     "staging_root": "/mnt/tank/Media/staging",
     "rclone_remote": "seedbox",
     "seedbox_tv_path": "/downloads/Done3/tv-sonarr",
@@ -180,6 +188,15 @@ def validate_managed_path(path, base, field_name, strict=True):
     ok = is_strict_subpath(path, base) if strict else is_subpath(path, base)
     if not ok:
         raise ValueError(f'{field_name} must stay under {base}')
+    return path
+
+def to_container_media_path(path):
+    """Translate a host-style TRUENAS_MEDIA_ROOT path (as stored in settings,
+    e.g. /mnt/tank/Media/Audiobooks) into the actual container filesystem path
+    under CONTAINER_MEDIA_ROOT, for code that does real file I/O rather than
+    calling the TrueNAS host API."""
+    if path.startswith(TRUENAS_MEDIA_ROOT):
+        return CONTAINER_MEDIA_ROOT + path[len(TRUENAS_MEDIA_ROOT):]
     return path
 
 def validate_service_url(url, field_name):
@@ -657,6 +674,8 @@ def run_torrent_sync():
                         'torrent sync failed: name=%s returncode=%d log=%s',
                         t['name'], result.returncode, rclone_tail[:500])
 
+        organize_bookshelf_staging(cfg)
+
         torrent_sync_state['last_sync'] = time.time()
         torrent_sync_state['status'] = 'idle'
         torrent_sync_state['active_torrent'] = None
@@ -841,6 +860,8 @@ def save_settings():
         cfg['staging_bookshelf'] = validate_managed_path(cfg['staging_bookshelf'], CONTAINER_STAGING_ROOT, 'staging_bookshelf')
         cfg['tv_library'] = validate_managed_path(cfg['tv_library'], TRUENAS_MEDIA_ROOT, 'tv_library')
         cfg['movies_library'] = validate_managed_path(cfg['movies_library'], TRUENAS_MEDIA_ROOT, 'movies_library')
+        cfg['audiobooks_library'] = validate_managed_path(cfg['audiobooks_library'], TRUENAS_MEDIA_ROOT, 'audiobooks_library')
+        cfg['books_library'] = validate_managed_path(cfg['books_library'], TRUENAS_MEDIA_ROOT, 'books_library')
         cfg['staging_root'] = validate_managed_path(cfg['staging_root'], TRUENAS_MEDIA_ROOT, 'staging_root')
         cfg['sonarr_url'] = validate_service_url(cfg['sonarr_url'], 'sonarr_url')
         cfg['radarr_url'] = validate_service_url(cfg['radarr_url'], 'radarr_url')
@@ -894,6 +915,175 @@ def has_book(path):
         return False
     except OSError:
         return False
+
+def sanitize_path_component(name):
+    """Reject anything that could escape the intended destination directory
+    when building a path from user/torrent-supplied text (author, title)."""
+    name = name.strip()
+    if not name or name in ('.', '..') or '/' in name or '\\' in name:
+        raise ValueError(f'unsafe path component: {name!r}')
+    return name
+
+def parse_author_title(folder_name):
+    """Split a Bookshelf-style folder name "Author Name - Book Title (Unabridged)"
+    into (author, title) on the first " - ". Returns None if it doesn't match
+    that pattern (e.g. no separator), so the caller can leave it alone rather
+    than guess."""
+    if ' - ' not in folder_name:
+        return None
+    author, title = folder_name.split(' - ', 1)
+    author, title = author.strip(), title.strip()
+    if not author or not title:
+        return None
+    return author, title
+
+def _classify_book_entry(src):
+    """Return 'audio' or 'ebook' based on which extensions are present in src
+    (a file path or a directory). Audio takes priority — an audiobook often
+    includes a PDF booklet alongside the .m4b/.mp3 files."""
+    audio_exts = {'.m4b', '.mp3', '.m4a', '.flac'}
+    ebook_exts = {'.epub', '.mobi', '.azw3', '.pdf'}
+    has_ebook = False
+    paths = [src] if os.path.isfile(src) else [
+        os.path.join(dp, f) for dp, _, fns in os.walk(src) for f in fns
+    ]
+    for fpath in paths:
+        ext = os.path.splitext(fpath)[1].lower()
+        if ext in audio_exts:
+            return 'audio'
+        if ext in ebook_exts:
+            has_ebook = True
+    return 'ebook' if has_ebook else None
+
+def _move_book_file(src_file, dest_file):
+    """Move a single book file into place, refusing to clobber an existing
+    destination (e.g. from a retried/duplicate sync). Returns True if moved."""
+    if os.path.exists(dest_file):
+        logger.warning('organize_bookshelf_staging: destination already exists, '
+                        'leaving source in place: %s', dest_file)
+        return False
+    shutil.move(src_file, dest_file)
+    return True
+
+def _do_organize_bookshelf_staging(cfg):
+    """Core organize logic — caller must already hold sync_lock.
+    Routes completed bookshelf staging items to audiobooks_library (Audiobookshelf)
+    or books_library (Kavita) based on file extensions:
+      staging_bookshelf/Author - Title (Unabridged)/track.m4b
+        -> audiobooks_library/Author/Title (Unabridged)/track.m4b
+      staging_bookshelf/Author - Some Novel/book.epub
+        -> books_library/Author/Some Novel/book.epub
+    Audio formats (.m4b/.mp3/.m4a/.flac) take priority over ebook formats
+    (.epub/.mobi/.azw3/.pdf) when both are present."""
+    staging_base = cfg.get('staging_bookshelf', '')
+    # Both library paths are validated/stored as TrueNAS host paths - translate
+    # to the actual container mount point before any real file I/O.
+    audiobooks_lib = to_container_media_path(cfg.get('audiobooks_library', ''))
+    books_lib = to_container_media_path(cfg.get('books_library', ''))
+    if not staging_base or not os.path.isdir(staging_base):
+        return
+    if not audiobooks_lib and not books_lib:
+        return
+    try:
+        entries = os.listdir(staging_base)
+    except OSError as e:
+        logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
+        return
+    for name in entries:
+            src = os.path.join(staging_base, name)
+            is_file = os.path.isfile(src)
+            if is_file:
+                # Single-file torrent (run_torrent_sync uses copyto for these) -
+                # the bare filename is both the torrent's identity and the only
+                # content to move; strip the extension before parsing author/title.
+                if os.path.splitext(name)[1].lower() not in BOOK_EXTENSIONS:
+                    continue
+                name_for_parsing = os.path.splitext(name)[0]
+            elif os.path.isdir(src):
+                if not has_book(src):
+                    continue  # still copying, or genuinely no book files yet
+                name_for_parsing = name
+            else:
+                continue
+            book_type = _classify_book_entry(src)
+            if book_type == 'audio':
+                dest_lib = audiobooks_lib
+            elif book_type == 'ebook':
+                dest_lib = books_lib
+            else:
+                logger.warning('organize_bookshelf_staging: no recognisable book files in "%s" - leaving in place', name)
+                continue
+            if not dest_lib:
+                logger.warning('organize_bookshelf_staging: no library configured for %s "%s" - leaving in place', book_type, name)
+                continue
+            parsed = parse_author_title(name_for_parsing)
+            if not parsed:
+                logger.warning('organize_bookshelf_staging: could not parse author/title from "%s" - leaving in place', name)
+                continue
+            try:
+                author = sanitize_path_component(parsed[0])
+                title = sanitize_path_component(parsed[1])
+            except ValueError as e:
+                logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
+                continue
+            dest_dir = os.path.join(dest_lib, author, title)
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                if is_file:
+                    moved = _move_book_file(src, os.path.join(dest_dir, name))
+                    if moved:
+                        logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
+                    continue
+                moved_any = False
+                skipped_any = False  # True if any dest already existed
+                # Walk recursively (matching has_book()'s own traversal) - multi-disc
+                # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
+                # top-level-only listing would miss them entirely.
+                for dirpath, _, filenames in os.walk(src):
+                    rel_dir = os.path.relpath(dirpath, src)
+                    safe_rel = None
+                    if rel_dir == '.':
+                        safe_rel = ''
+                    else:
+                        try:
+                            safe_rel = os.path.join(*(sanitize_path_component(p) for p in rel_dir.split(os.sep)))
+                        except ValueError:
+                            logger.warning('organize_bookshelf_staging: skipping unsafe nested path "%s" in "%s"', rel_dir, name)
+                            continue
+                    for fname in filenames:
+                        if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
+                            continue
+                        dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                        os.makedirs(dest_subdir, exist_ok=True)
+                        if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname)):
+                            moved_any = True
+                        else:
+                            skipped_any = True
+                if moved_any and not skipped_any:
+                    # All book files moved — safe to remove staging folder and extras.
+                    shutil.rmtree(src, ignore_errors=True)
+                    logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
+                elif moved_any:
+                    # Partial move: some destinations already existed. Leave staging
+                    # folder intact so nothing is lost — resolve the library duplicate
+                    # manually, then the next cycle will retry the remaining files.
+                    logger.warning('organize_bookshelf_staging: partial move for "%s" - some files already at destination, staging folder kept', name)
+                else:
+                    logger.warning('organize_bookshelf_staging: no book files moved for "%s"', name)
+            except OSError as e:
+                logger.warning('organize_bookshelf_staging: failed to organize "%s": %s', name, e)
+
+def organize_bookshelf_staging(cfg):
+    """Acquire sync_lock then run _do_organize_bookshelf_staging.
+    Called by the scheduled torrent sync. Use _do_organize_bookshelf_staging
+    directly when the caller already holds sync_lock (e.g. sync_folder)."""
+    if not sync_lock.acquire(blocking=False):
+        logger.info('organize_bookshelf_staging: skipped - a manual sync is in progress')
+        return
+    try:
+        _do_organize_bookshelf_staging(cfg)
+    finally:
+        sync_lock.release()
 
 def scan_staging(base, category):
     # "has_video" doubles as the generic ready/complete flag for every category —
@@ -982,6 +1172,11 @@ def sync_folder():
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # nosec B603
         if r.returncode == 0:
             logger.info('sync success category=%s name=%s', category, name)
+            if category == 'bookshelf':
+                # sync_lock is already held here, so call the inner function
+                # directly rather than going through organize_bookshelf_staging
+                # (which would try to acquire the lock and immediately defer).
+                _do_organize_bookshelf_staging(cfg)
         else:
             logger.warning('sync failed category=%s name=%s stderr=%s', category, name, r.stderr.strip())
         return jsonify({'success': r.returncode==0, 'message': 'Sync finished' if r.returncode == 0 else 'Sync failed'})
@@ -1203,13 +1398,15 @@ def fix_permissions():
         return jsonify({'error': 'Unauthorized'}), 401
     cfg = load_config()
     data = request.json or {}
-    target = data.get('target', 'all')  # 'tv', 'movies', 'staging', 'all'
+    target = data.get('target', 'all')  # 'tv', 'movies', 'staging', 'audiobooks', 'books', 'all'
 
     try:
         paths = {
             'tv': validate_managed_path(cfg.get('tv_library', '/mnt/tank/Media/TV'), TRUENAS_MEDIA_ROOT, 'tv_library'),
             'movies': validate_managed_path(cfg.get('movies_library', '/mnt/tank/Media/Movies'), TRUENAS_MEDIA_ROOT, 'movies_library'),
-            'staging': validate_managed_path(cfg.get('staging_root', '/mnt/tank/Media/staging'), TRUENAS_MEDIA_ROOT, 'staging_root')
+            'staging': validate_managed_path(cfg.get('staging_root', '/mnt/tank/Media/staging'), TRUENAS_MEDIA_ROOT, 'staging_root'),
+            'audiobooks': validate_managed_path(cfg.get('audiobooks_library', '/mnt/tank/Media/Audiobooks'), TRUENAS_MEDIA_ROOT, 'audiobooks_library'),
+            'books': validate_managed_path(cfg.get('books_library', '/mnt/tank/Media/Books'), TRUENAS_MEDIA_ROOT, 'books_library'),
         }
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -1530,7 +1727,7 @@ def torrent_sync_import_existing():
                 if is_complete:
                     found_path = staging_path
                 elif library_base:
-                    found_path = find_in_library(library_base, t['name'], category)
+                    found_path = find_in_library(to_container_media_path(library_base), t['name'], category)
 
                 if found_path:
                     cursor = conn.execute(
