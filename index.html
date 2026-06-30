@@ -111,6 +111,21 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 .field input.ok { border-color:rgba(106,247,162,.5); }
 .field input.err { border-color:rgba(247,106,106,.5); }
 .check-row { display:flex; align-items:center; gap:.5rem; color:var(--muted); font-size:.75rem; }
+/* Path browser */
+.path-input-row { display:flex; gap:.5rem; }
+.path-input-row input { flex:1; }
+.btn-browse { background:var(--bg2); border:1px solid var(--border); border-radius:5px; color:var(--muted); font-size:.75rem; padding:.45rem .75rem; cursor:pointer; white-space:nowrap; }
+.btn-browse:hover { border-color:var(--accent); color:var(--text); }
+#path-browser-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:1000; display:flex; align-items:center; justify-content:center; }
+#path-browser { background:var(--surface2); border:1px solid var(--border); border-radius:8px; width:min(520px,92vw); max-height:70vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,.8); }
+#pb-header { display:flex; align-items:center; justify-content:space-between; padding:.75rem 1rem; border-bottom:1px solid var(--border); font-size:.85rem; font-weight:600; background:var(--surface); }
+#pb-path { padding:.5rem 1rem; font-size:.7rem; color:var(--muted); font-family:'JetBrains Mono',monospace; word-break:break-all; border-bottom:1px solid var(--border); background:var(--bg); }
+#pb-list { overflow-y:auto; flex:1; padding:.4rem 0; background:var(--surface2); }
+.pb-item { display:flex; align-items:center; gap:.6rem; padding:.5rem 1rem; cursor:pointer; font-size:.8rem; color:var(--text); }
+.pb-item:hover { background:var(--surface); }
+.pb-item-icon { color:var(--muted); font-size:.9rem; }
+.pb-empty { padding:1rem; color:var(--muted); font-size:.8rem; text-align:center; }
+#pb-footer { display:flex; gap:.5rem; justify-content:flex-end; padding:.75rem 1rem; border-top:1px solid var(--border); background:var(--surface); }
 .check-row input { width:auto; }
 .test-row { display:flex; gap:.5rem; align-items:flex-end; }
 .test-row .field { flex:1; margin-bottom:0; }
@@ -385,14 +400,30 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
     <div class="settings-section">
       <h3>Media Paths</h3>
-      <div class="field"><label>Container Staging TV</label><input type="text" id="staging_tv" placeholder="/media/staging/tv-sonarr" /></div>
-      <div class="field"><label>Container Staging Movies</label><input type="text" id="staging_movies" placeholder="/media/staging/radarr" /></div>
-      <div class="field"><label>Container Staging Bookshelf</label><input type="text" id="staging_bookshelf" placeholder="/media/staging/bookshelf" /></div>
-      <div class="field"><label>TrueNAS TV Library</label><input type="text" id="tv_library" placeholder="/mnt/tank/Media/TV" /></div>
-      <div class="field"><label>TrueNAS Movies Library</label><input type="text" id="movies_library" placeholder="/mnt/tank/Media/Movies" /></div>
-      <div class="field"><label>TrueNAS Audiobooks Library</label><input type="text" id="audiobooks_library" placeholder="/mnt/tank/Media/Audiobooks" /></div>
-      <div class="field"><label>TrueNAS Books Library (Kavita)</label><input type="text" id="books_library" placeholder="/mnt/tank/Media/Books" /></div>
-      <div class="field"><label>TrueNAS Staging Root</label><input type="text" id="staging_root" placeholder="/mnt/tank/Media/staging" /></div>
+      <div class="field path-field"><label>Container Staging TV</label><div class="path-input-row"><input type="text" id="staging_tv" placeholder="/media/staging/tv-sonarr" /><button class="btn-browse" onclick="openBrowser('staging_tv')">Browse</button></div></div>
+      <div class="field path-field"><label>Container Staging Movies</label><div class="path-input-row"><input type="text" id="staging_movies" placeholder="/media/staging/radarr" /><button class="btn-browse" onclick="openBrowser('staging_movies')">Browse</button></div></div>
+      <div class="field path-field"><label>Container Staging Bookshelf</label><div class="path-input-row"><input type="text" id="staging_bookshelf" placeholder="/media/staging/bookshelf" /><button class="btn-browse" onclick="openBrowser('staging_bookshelf')">Browse</button></div></div>
+      <div class="field path-field"><label>TrueNAS TV Library</label><div class="path-input-row"><input type="text" id="tv_library" placeholder="/mnt/tank/Media/TV" /><button class="btn-browse" onclick="openBrowser('tv_library')">Browse</button></div></div>
+      <div class="field path-field"><label>TrueNAS Movies Library</label><div class="path-input-row"><input type="text" id="movies_library" placeholder="/mnt/tank/Media/Movies" /><button class="btn-browse" onclick="openBrowser('movies_library')">Browse</button></div></div>
+      <div class="field path-field"><label>TrueNAS Audiobooks Library</label><div class="path-input-row"><input type="text" id="audiobooks_library" placeholder="/mnt/tank/Media/Audiobooks" /><button class="btn-browse" onclick="openBrowser('audiobooks_library')">Browse</button></div></div>
+      <div class="field path-field"><label>TrueNAS Books Library (Kavita)</label><div class="path-input-row"><input type="text" id="books_library" placeholder="/mnt/tank/Media/Books" /><button class="btn-browse" onclick="openBrowser('books_library')">Browse</button></div></div>
+      <div class="field path-field"><label>TrueNAS Staging Root</label><div class="path-input-row"><input type="text" id="staging_root" placeholder="/mnt/tank/Media/staging" /><button class="btn-browse" onclick="openBrowser('staging_root')">Browse</button></div></div>
+    </div>
+
+    <!-- Directory browser modal -->
+    <div id="path-browser-overlay" style="display:none" onclick="if(event.target===this)closeBrowser()">
+      <div id="path-browser" role="dialog" aria-modal="true" aria-labelledby="pb-title">
+        <div id="pb-header">
+          <span id="pb-title">Select Folder</span>
+          <button id="pb-close" onclick="closeBrowser()" style="background:none;border:none;color:var(--text);font-size:1.2rem;cursor:pointer;padding:0 4px">✕</button>
+        </div>
+        <div id="pb-path"></div>
+        <div id="pb-list"></div>
+        <div id="pb-footer">
+          <button class="btn-secondary" onclick="closeBrowser()">Cancel</button>
+          <button class="btn-primary" onclick="selectCurrentPath()">Select This Folder</button>
+        </div>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -1082,6 +1113,95 @@ function toast(msg, type='info') {
 // ── Init ───────────────────────────────────────────────────────────────────
 loadStaging();
 tabLoaded['staging']=true;
+
+// ── Path browser ───────────────────────────────────────────────────────────
+let pbTargetField = null;
+let pbCurrentPath = null;
+let pbPreviousFocus = null;
+
+function pbEscapeHandler(e) {
+  if (e.key === 'Escape') closeBrowser();
+}
+
+function openBrowser(fieldId) {
+  pbTargetField = fieldId;
+  pbPreviousFocus = document.activeElement;
+  const current = document.getElementById(fieldId).value.trim();
+  browseTo(current || null);
+  document.getElementById('path-browser-overlay').style.display = 'flex';
+  document.addEventListener('keydown', pbEscapeHandler);
+  // Move focus into the modal so keyboard users can operate it immediately.
+  document.getElementById('pb-close').focus();
+}
+
+function closeBrowser() {
+  document.getElementById('path-browser-overlay').style.display = 'none';
+  document.removeEventListener('keydown', pbEscapeHandler);
+  pbTargetField = null;
+  pbCurrentPath = null;
+  if (pbPreviousFocus) { pbPreviousFocus.focus(); pbPreviousFocus = null; }
+}
+
+function selectCurrentPath() {
+  if (pbTargetField && pbCurrentPath) {
+    document.getElementById(pbTargetField).value = pbCurrentPath;
+  }
+  closeBrowser();
+}
+
+function pbMakeItem(iconText, labelText, onClick) {
+  const div = document.createElement('div');
+  div.className = 'pb-item';
+  div.addEventListener('click', onClick);
+  const icon = document.createElement('span');
+  icon.className = 'pb-item-icon';
+  icon.textContent = iconText;
+  const label = document.createElement('span');
+  label.textContent = labelText;
+  div.appendChild(icon);
+  div.appendChild(label);
+  return div;
+}
+
+function pbShowMessage(list, msg) {
+  list.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'pb-empty';
+  div.textContent = msg;
+  list.appendChild(div);
+}
+
+async function browseTo(path) {
+  const list = document.getElementById('pb-list');
+  const pathEl = document.getElementById('pb-path');
+  pbShowMessage(list, 'Loading…');
+  const url = '/api/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
+  try {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    const data = await r.json();
+    if (!r.ok) { pbShowMessage(list, data.error || 'Error'); return; }
+    pbCurrentPath = data.path;
+    pathEl.textContent = data.path;
+    list.innerHTML = '';
+    if (data.parent) {
+      list.appendChild(pbMakeItem('↑', '..', () => browseTo(data.parent)));
+    }
+    if (data.dirs.length === 0) {
+      // Append rather than replace so the .. parent row added above stays visible.
+      const empty = document.createElement('div');
+      empty.className = 'pb-empty';
+      empty.textContent = 'No subfolders';
+      list.appendChild(empty);
+      return;
+    }
+    for (const d of data.dirs) {
+      const child = data.path.replace(/\/+$/, '') + '/' + d;
+      list.appendChild(pbMakeItem('📁', d, () => browseTo(child)));
+    }
+  } catch(e) {
+    pbShowMessage(list, 'Network error');
+  }
+}
 </script>
 </body>
 </html>
