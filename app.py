@@ -820,6 +820,31 @@ def get_settings():
             safe[key] = SECRET_MASK
     return jsonify(safe)
 
+@app.route('/api/browse')
+@limiter.limit("120 per minute")
+def browse_directory():
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    requested = request.args.get('path', '').strip() or TRUENAS_MEDIA_ROOT
+    # Only allow browsing under the two roots that settings paths can live in.
+    if not (is_subpath(requested, TRUENAS_MEDIA_ROOT) or
+            is_subpath(requested, CONTAINER_STAGING_ROOT)):
+        return jsonify({'error': f'Path must be under {TRUENAS_MEDIA_ROOT} or {CONTAINER_STAGING_ROOT}'}), 400
+    container_path = to_container_media_path(requested)
+    try:
+        dirs = sorted(
+            e.name for e in os.scandir(container_path)
+            if e.is_dir(follow_symlinks=False) and not e.name.startswith('.')
+        )
+    except OSError as e:
+        return jsonify({'error': str(e)}), 404
+    parent = os.path.dirname(requested.rstrip('/\\'))
+    can_go_up = parent != requested and (
+        is_subpath(parent, TRUENAS_MEDIA_ROOT) or
+        is_subpath(parent, CONTAINER_STAGING_ROOT)
+    )
+    return jsonify({'path': requested, 'parent': parent if can_go_up else None, 'dirs': dirs})
+
 @app.route('/api/settings', methods=['POST'])
 def save_settings():
     if not is_authenticated():
