@@ -1187,7 +1187,11 @@ async function browseTo(path) {
       list.appendChild(pbMakeItem('↑', '..', () => browseTo(data.parent)));
     }
     if (data.dirs.length === 0) {
-      pbShowMessage(list, 'No subfolders');
+      // Append rather than replace so the .. parent row added above stays visible.
+      const empty = document.createElement('div');
+      empty.className = 'pb-empty';
+      empty.textContent = 'No subfolders';
+      list.appendChild(empty);
       return;
     }
     for (const d of data.dirs) {
