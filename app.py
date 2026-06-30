@@ -831,6 +831,18 @@ def browse_directory():
             is_subpath(requested, CONTAINER_STAGING_ROOT)):
         return jsonify({'error': f'Path must be under {TRUENAS_MEDIA_ROOT} or {CONTAINER_STAGING_ROOT}'}), 400
     container_path = to_container_media_path(requested)
+    # Re-check containment on the translated path using realpath so a symlink
+    # at the mount point (e.g. /media -> /etc) can't let the scan escape the
+    # permitted trees.  String-prefix is_subpath on `requested` alone isn't
+    # sufficient once we hand the translated path to os.scandir.
+    try:
+        real = os.path.realpath(container_path)
+    except OSError as e:
+        return jsonify({'error': str(e)}), 404
+    real_media = os.path.realpath(CONTAINER_MEDIA_ROOT)
+    real_staging = os.path.realpath(CONTAINER_STAGING_ROOT)
+    if not (is_subpath(real, real_media) or is_subpath(real, real_staging)):
+        return jsonify({'error': 'Resolved path is outside permitted roots'}), 400
     try:
         dirs = sorted(
             e.name for e in os.scandir(container_path)

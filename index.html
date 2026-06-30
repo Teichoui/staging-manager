@@ -412,10 +412,10 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
     <!-- Directory browser modal -->
     <div id="path-browser-overlay" style="display:none" onclick="if(event.target===this)closeBrowser()">
-      <div id="path-browser">
+      <div id="path-browser" role="dialog" aria-modal="true" aria-labelledby="pb-title">
         <div id="pb-header">
           <span id="pb-title">Select Folder</span>
-          <button onclick="closeBrowser()" style="background:none;border:none;color:var(--text);font-size:1.2rem;cursor:pointer;padding:0 4px">✕</button>
+          <button id="pb-close" onclick="closeBrowser()" style="background:none;border:none;color:var(--text);font-size:1.2rem;cursor:pointer;padding:0 4px">✕</button>
         </div>
         <div id="pb-path"></div>
         <div id="pb-list"></div>
@@ -1117,18 +1117,29 @@ tabLoaded['staging']=true;
 // ── Path browser ───────────────────────────────────────────────────────────
 let pbTargetField = null;
 let pbCurrentPath = null;
+let pbPreviousFocus = null;
+
+function pbEscapeHandler(e) {
+  if (e.key === 'Escape') closeBrowser();
+}
 
 function openBrowser(fieldId) {
   pbTargetField = fieldId;
+  pbPreviousFocus = document.activeElement;
   const current = document.getElementById(fieldId).value.trim();
   browseTo(current || null);
   document.getElementById('path-browser-overlay').style.display = 'flex';
+  document.addEventListener('keydown', pbEscapeHandler);
+  // Move focus into the modal so keyboard users can operate it immediately.
+  document.getElementById('pb-close').focus();
 }
 
 function closeBrowser() {
   document.getElementById('path-browser-overlay').style.display = 'none';
+  document.removeEventListener('keydown', pbEscapeHandler);
   pbTargetField = null;
   pbCurrentPath = null;
+  if (pbPreviousFocus) { pbPreviousFocus.focus(); pbPreviousFocus = null; }
 }
 
 function selectCurrentPath() {
@@ -1138,31 +1149,53 @@ function selectCurrentPath() {
   closeBrowser();
 }
 
+function pbMakeItem(iconText, labelText, onClick) {
+  const div = document.createElement('div');
+  div.className = 'pb-item';
+  div.addEventListener('click', onClick);
+  const icon = document.createElement('span');
+  icon.className = 'pb-item-icon';
+  icon.textContent = iconText;
+  const label = document.createElement('span');
+  label.textContent = labelText;
+  div.appendChild(icon);
+  div.appendChild(label);
+  return div;
+}
+
+function pbShowMessage(list, msg) {
+  list.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'pb-empty';
+  div.textContent = msg;
+  list.appendChild(div);
+}
+
 async function browseTo(path) {
   const list = document.getElementById('pb-list');
   const pathEl = document.getElementById('pb-path');
-  list.innerHTML = '<div class="pb-empty">Loading…</div>';
+  pbShowMessage(list, 'Loading…');
   const url = '/api/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
   try {
     const r = await fetch(url, { credentials: 'same-origin' });
     const data = await r.json();
-    if (!r.ok) { list.innerHTML = `<div class="pb-empty">${data.error || 'Error'}</div>`; return; }
+    if (!r.ok) { pbShowMessage(list, data.error || 'Error'); return; }
     pbCurrentPath = data.path;
     pathEl.textContent = data.path;
-    const items = [];
+    list.innerHTML = '';
     if (data.parent) {
-      items.push(`<div class="pb-item" onclick="browseTo(${JSON.stringify(data.parent)})"><span class="pb-item-icon">↑</span> ..</div>`);
+      list.appendChild(pbMakeItem('↑', '..', () => browseTo(data.parent)));
     }
-    if (data.dirs.length === 0 && !data.parent) {
-      items.push('<div class="pb-empty">No subfolders</div>');
+    if (data.dirs.length === 0) {
+      pbShowMessage(list, 'No subfolders');
+      return;
     }
     for (const d of data.dirs) {
       const child = data.path.replace(/\/+$/, '') + '/' + d;
-      items.push(`<div class="pb-item" onclick="browseTo(${JSON.stringify(child)})"><span class="pb-item-icon">📁</span>${d}</div>`);
+      list.appendChild(pbMakeItem('📁', d, () => browseTo(child)));
     }
-    list.innerHTML = items.join('');
   } catch(e) {
-    list.innerHTML = `<div class="pb-empty">Network error</div>`;
+    pbShowMessage(list, 'Network error');
   }
 }
 </script>
