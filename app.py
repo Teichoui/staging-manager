@@ -1257,13 +1257,19 @@ def organize_suggestions():
             # (Book 1.epub, Book 2.epub, ...) - each is its own book and needs
             # its own row, or approving would pile them into one library title.
             # One-file-per-book only holds for ebook formats: a folder of .mp3
-            # files is one audiobook, and a companion .pdf belongs to its book.
+            # files is one audiobook. '.pdf' counts as an ebook only when the
+            # pack has no audio at all - an audiobook's companion/booklet PDF
+            # belongs to its book, but a folder of standalone PDFs is a pack
+            # of separate books just like epubs.
             root_ebooks = []
             if os.path.isdir(src):
+                split_exts = ('.epub', '.mobi', '.azw3')
+                if _classify_book_entry(src) != 'audio':
+                    split_exts += ('.pdf',)
                 root_ebooks = sorted(
                     f for f in os.listdir(src)
                     if os.path.isfile(os.path.join(src, f))
-                    and os.path.splitext(f)[1].lower() in ('.epub', '.mobi', '.azw3')
+                    and os.path.splitext(f)[1].lower() in split_exts
                 )
             if len(root_ebooks) > 1:
                 for f in root_ebooks:
