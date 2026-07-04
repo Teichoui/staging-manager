@@ -1270,10 +1270,12 @@ function renderOrganizeSuggestions(packs) {
     for (const item of pack.items) {
       const row = document.createElement('div');
       row.className = 'review-row';
-      if (item.subfolder !== null) {
+      // A row is either a book subfolder or a single ebook file in a flat pack
+      const rowSource = item.subfolder !== null ? item.subfolder : item.file;
+      if (rowSource !== null && rowSource !== undefined) {
         const sub = document.createElement('span');
         sub.className = 'review-row-sub';
-        sub.textContent = item.subfolder;
+        sub.textContent = rowSource;
         row.appendChild(sub);
       }
       const rowId = reviewInputSeq++;
@@ -1300,12 +1302,13 @@ function renderOrganizeSuggestions(packs) {
       row.appendChild(titleLabel);
       row.appendChild(titleInput);
       card.appendChild(row);
-      rows.push({ subfolder: item.subfolder, authorInput, titleInput });
+      rows.push({ subfolder: item.subfolder, file: item.file, authorInput, titleInput });
     }
 
     approveBtn.addEventListener('click', async () => {
       const items = rows.map(r => ({
         subfolder: r.subfolder,
+        file: r.file,
         author: r.authorInput.value.trim(),
         title: r.titleInput.value.trim()
       }));
@@ -1329,6 +1332,12 @@ function renderOrganizeSuggestions(packs) {
           approveBtn.textContent = 'Organize';
           loadStaging();
           return;
+        }
+        if (res.not_organized && res.not_organized.length) {
+          // Renamed fine, but the organizer refused to overwrite existing
+          // library copies - these stay in staging until the duplicate is
+          // resolved manually.
+          alert('Already in the library (left in staging):\n' + res.not_organized.join('\n'));
         }
         loadStaging();  // re-renders staging list, suggestions, and history
       } catch(e) {
