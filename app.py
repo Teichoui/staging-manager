@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -974,6 +974,59 @@ def parse_author_title(folder_name):
         return None
     return author, title
 
+def _first_book_file(path, exts):
+    """First file under path (or path itself, if it's a file) whose extension
+    is in exts. Sorted walk so the result is stable across sync cycles."""
+    if os.path.isfile(path):
+        return path if os.path.splitext(path)[1].lower() in exts else None
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames.sort()
+        for fname in sorted(filenames):
+            if os.path.splitext(fname)[1].lower() in exts:
+                return os.path.join(dirpath, fname)
+    return None
+
+def _epub_metadata(epub_path):
+    """Best-effort (author, title) from an epub's embedded OPF metadata.
+    Epubs are zip archives; META-INF/container.xml names the OPF file, whose
+    dc:creator/dc:title fields are the canonical author and title. Values are
+    only used to prefill review suggestions the user edits before applying, so
+    a simple regex extraction is fine here (and avoids pulling in an XML
+    parser for two tag lookups). Returns (None, None) on any failure."""
+    try:
+        with zipfile.ZipFile(epub_path) as z:
+            container = z.read('META-INF/container.xml').decode('utf-8', 'ignore')
+            m = re.search(r'full-path="([^"]+\.opf)"', container)
+            if not m:
+                return None, None
+            opf = z.read(m.group(1)).decode('utf-8', 'ignore')
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return None, None
+    def tag(name):
+        m = re.search(r'<dc:%s[^>]*>([^<]+)</dc:%s>' % (name, name), opf)
+        return m.group(1).strip() if m else None
+    return tag('creator'), tag('title')
+
+def _suggest_author_title(path, default_title):
+    """Best-effort (author, title) suggestion for a staging item whose name
+    didn't match the "Author - Title" folder convention. Tries the epub's
+    embedded metadata first, then the common "Title - Author" filename
+    pattern. These are prefill suggestions only - the user reviews and can
+    edit both fields before anything moves."""
+    author = title = None
+    epub = _first_book_file(path, {'.epub'})
+    if epub:
+        author, title = _epub_metadata(epub)
+    if not author:
+        book = _first_book_file(path, BOOK_EXTENSIONS)
+        if book:
+            stem = os.path.splitext(os.path.basename(book))[0]
+            if ' - ' in stem:
+                t, a = stem.rsplit(' - ', 1)
+                author = a.strip()
+                title = title or t.strip()
+    return (author or '', title or default_title)
+
 def _classify_book_entry(src):
     """Return 'audio' or 'ebook' based on which extensions are present in src
     (a file path or a directory). Audio takes priority — an audiobook often
@@ -1164,6 +1217,167 @@ def get_staging():
     return jsonify({'tv': scan_staging(tv_base, 'tv'), 'movies': scan_staging(movies_base, 'movies'),
                     'bookshelf': scan_staging(bookshelf_base, 'bookshelf')})
 
+@app.route('/api/organize/suggestions')
+def organize_suggestions():
+    """Bookshelf staging items the auto-organizer can't handle (name doesn't
+    match "Author - Title"), each with a best-effort author/title suggestion
+    prefilled from epub metadata or filename patterns. A wrapper folder that
+    contains one subfolder per book (a series pack) gets one suggestion row
+    per book so each can be reviewed individually."""
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    cfg = load_config()
+    staging_base = cfg.get('staging_bookshelf', '')
+    packs = []
+    if not staging_base or not os.path.isdir(staging_base):
+        return jsonify({'suggestions': packs})
+    try:
+        entries = sorted(os.listdir(staging_base))
+    except OSError:
+        return jsonify({'suggestions': packs})
+    for name in entries:
+        src = os.path.join(staging_base, name)
+        name_for_parsing = os.path.splitext(name)[0] if os.path.isfile(src) else name
+        if not has_book(src):
+            continue
+        if parse_author_title(name_for_parsing):
+            continue  # the organizer will handle this one on its own
+        items = []
+        if os.path.isdir(src):
+            subs = [d for d in sorted(os.listdir(src))
+                    if os.path.isdir(os.path.join(src, d)) and has_book(os.path.join(src, d))]
+        else:
+            subs = []
+        if subs:
+            for sub in subs:
+                author, title = _suggest_author_title(os.path.join(src, sub), sub)
+                items.append({'subfolder': sub, 'file': None, 'author': author, 'title': title})
+        else:
+            # A flat pack can hold several standalone ebooks at its root
+            # (Book 1.epub, Book 2.epub, ...) - each is its own book and needs
+            # its own row, or approving would pile them into one library title.
+            # One-file-per-book only holds for ebook formats: a folder of .mp3
+            # files is one audiobook. '.pdf' counts as an ebook only when the
+            # pack has no audio at all - an audiobook's companion/booklet PDF
+            # belongs to its book, but a folder of standalone PDFs is a pack
+            # of separate books just like epubs.
+            root_ebooks = []
+            if os.path.isdir(src):
+                split_exts = ('.epub', '.mobi', '.azw3')
+                if _classify_book_entry(src) != 'audio':
+                    split_exts += ('.pdf',)
+                root_ebooks = sorted(
+                    f for f in os.listdir(src)
+                    if os.path.isfile(os.path.join(src, f))
+                    and os.path.splitext(f)[1].lower() in split_exts
+                )
+            if len(root_ebooks) > 1:
+                for f in root_ebooks:
+                    author, title = _suggest_author_title(os.path.join(src, f), os.path.splitext(f)[0])
+                    items.append({'subfolder': None, 'file': f, 'author': author, 'title': title})
+            else:
+                author, title = _suggest_author_title(src, name_for_parsing)
+                items.append({'subfolder': None, 'file': None, 'author': author, 'title': title})
+        packs.append({'name': name, 'items': items})
+    return jsonify({'suggestions': packs})
+
+@app.route('/api/organize/apply', methods=['POST'])
+@limiter.limit("30 per minute")
+def organize_apply():
+    """Apply reviewed author/title values: rename the staging item(s) to the
+    "Author - Title" convention the organizer understands, then run the
+    organizer immediately so the books land in the library right away."""
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    cfg = load_config()
+    data = request.json or {}
+    name = data.get('name', '')
+    items = data.get('items', [])
+    staging_base = cfg.get('staging_bookshelf', '')
+    try:
+        name = sanitize_path_component(name)
+    except ValueError:
+        return jsonify({'error': 'Invalid name'}), 400
+    src = os.path.join(staging_base, name)
+    if not staging_base or not os.path.exists(src):
+        return jsonify({'error': 'Item not found in staging'}), 404
+    if not items or not isinstance(items, list):
+        return jsonify({'error': 'No items to organize'}), 400
+    if not sync_lock.acquire(blocking=False):
+        return jsonify({'error': 'A sync is already running'}), 429
+    # Also hold torrent_sync_lock: the scheduled torrent sync copies into
+    # bookshelf staging under that lock (not sync_lock), so approving a pack
+    # mid-copy could rename the folder out from under an active rclone
+    # transfer. Both acquires are non-blocking, so lock order can't deadlock
+    # against run_torrent_sync (which takes them in the opposite order).
+    if not torrent_sync_lock.acquire(blocking=False):
+        sync_lock.release()
+        return jsonify({'error': 'Torrent sync is running - try again in a moment'}), 429
+    try:
+        # Pass 1: validate every row before touching the filesystem, so a bad
+        # entry can't leave the batch half-renamed (approve-all on a series
+        # pack should be all-or-nothing).
+        moves = []
+        seen_dests = set()
+        for item in items:
+            author = (item.get('author') or '').strip()
+            title = (item.get('title') or '').strip()
+            sub = item.get('subfolder')
+            fname = item.get('file')
+            try:
+                author = sanitize_path_component(author)
+                title = sanitize_path_component(title)
+                if sub is not None:
+                    sub = sanitize_path_component(sub)
+                if fname is not None:
+                    fname = sanitize_path_component(fname)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            # A row is one of: a book subfolder, a single ebook file inside a
+            # flat pack, or the whole staging item itself.
+            if fname is not None:
+                item_src = os.path.join(src, fname)
+            elif sub is not None:
+                item_src = os.path.join(src, sub)
+            else:
+                item_src = src
+            if not os.path.exists(item_src):
+                return jsonify({'error': f'Not found in staging: {fname or sub or name}'}), 404
+            dest = os.path.join(staging_base, f'{author} - {title}')
+            if os.path.isfile(item_src):
+                dest += os.path.splitext(item_src)[1].lower()
+            if os.path.exists(dest) or dest in seen_dests:
+                return jsonify({'error': f'Already exists in staging: {os.path.basename(dest)}'}), 409
+            seen_dests.add(dest)
+            moves.append((item_src, dest, fname or sub))
+        # Pass 2: everything validated, do the renames.
+        renamed = 0
+        try:
+            for item_src, dest, label in moves:
+                os.rename(item_src, dest)
+                renamed += 1
+                logger.info('organize_apply: renamed "%s" -> "%s"', label or name, os.path.basename(dest))
+        except OSError as e:
+            # A rename itself failed (permissions, disk). Report what happened;
+            # already-renamed items are valid "Author - Title" entries that the
+            # organizer will still pick up, so nothing is lost.
+            logger.warning('organize_apply: rename failed after %d of %d: %s', renamed, len(moves), e)
+            return jsonify({'error': f'Rename failed after {renamed} of {len(moves)} items'}), 500
+        # After promoting books out of a series wrapper folder, clear away the
+        # leftover shell (covers/nfo only). A wrapper that still has book files
+        # (e.g. only some rows were approved) is kept for the next review.
+        if os.path.isdir(src) and not has_book(src):
+            shutil.rmtree(src, ignore_errors=True)
+        _do_organize_bookshelf_staging(cfg)
+        # The organizer skips items whose library destination already exists
+        # (it never overwrites), leaving them in staging with only a log
+        # warning - surface those so the UI doesn't report a clean success.
+        not_organized = [os.path.basename(d) for _, d, _ in moves if os.path.exists(d)]
+        return jsonify({'success': True, 'renamed': renamed, 'not_organized': not_organized})
+    finally:
+        torrent_sync_lock.release()
+        sync_lock.release()
+
 @app.route('/api/sync', methods=['POST'])
 @limiter.limit("6 per minute")
 def sync_folder():
@@ -1213,7 +1427,16 @@ def sync_folder():
                 # sync_lock is already held here, so call the inner function
                 # directly rather than going through organize_bookshelf_staging
                 # (which would try to acquire the lock and immediately defer).
-                _do_organize_bookshelf_staging(cfg)
+                # Also skip while the scheduled torrent sync holds its own lock
+                # and may still be copying into bookshelf staging - its own
+                # organize step at the end of the cycle covers this item.
+                if torrent_sync_lock.acquire(blocking=False):
+                    try:
+                        _do_organize_bookshelf_staging(cfg)
+                    finally:
+                        torrent_sync_lock.release()
+                else:
+                    logger.info('sync: organize deferred - torrent sync is running')
         else:
             logger.warning('sync failed category=%s name=%s stderr=%s', category, name, r.stderr.strip())
         return jsonify({'success': r.returncode==0, 'message': 'Sync finished' if r.returncode == 0 else 'Sync failed'})
