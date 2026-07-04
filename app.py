@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -974,6 +974,59 @@ def parse_author_title(folder_name):
         return None
     return author, title
 
+def _first_book_file(path, exts):
+    """First file under path (or path itself, if it's a file) whose extension
+    is in exts. Sorted walk so the result is stable across sync cycles."""
+    if os.path.isfile(path):
+        return path if os.path.splitext(path)[1].lower() in exts else None
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames.sort()
+        for fname in sorted(filenames):
+            if os.path.splitext(fname)[1].lower() in exts:
+                return os.path.join(dirpath, fname)
+    return None
+
+def _epub_metadata(epub_path):
+    """Best-effort (author, title) from an epub's embedded OPF metadata.
+    Epubs are zip archives; META-INF/container.xml names the OPF file, whose
+    dc:creator/dc:title fields are the canonical author and title. Values are
+    only used to prefill review suggestions the user edits before applying, so
+    a simple regex extraction is fine here (and avoids pulling in an XML
+    parser for two tag lookups). Returns (None, None) on any failure."""
+    try:
+        with zipfile.ZipFile(epub_path) as z:
+            container = z.read('META-INF/container.xml').decode('utf-8', 'ignore')
+            m = re.search(r'full-path="([^"]+\.opf)"', container)
+            if not m:
+                return None, None
+            opf = z.read(m.group(1)).decode('utf-8', 'ignore')
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return None, None
+    def tag(name):
+        m = re.search(r'<dc:%s[^>]*>([^<]+)</dc:%s>' % (name, name), opf)
+        return m.group(1).strip() if m else None
+    return tag('creator'), tag('title')
+
+def _suggest_author_title(path, default_title):
+    """Best-effort (author, title) suggestion for a staging item whose name
+    didn't match the "Author - Title" folder convention. Tries the epub's
+    embedded metadata first, then the common "Title - Author" filename
+    pattern. These are prefill suggestions only - the user reviews and can
+    edit both fields before anything moves."""
+    author = title = None
+    epub = _first_book_file(path, {'.epub'})
+    if epub:
+        author, title = _epub_metadata(epub)
+    if not author:
+        book = _first_book_file(path, BOOK_EXTENSIONS)
+        if book:
+            stem = os.path.splitext(os.path.basename(book))[0]
+            if ' - ' in stem:
+                t, a = stem.rsplit(' - ', 1)
+                author = a.strip()
+                title = title or t.strip()
+    return (author or '', title or default_title)
+
 def _classify_book_entry(src):
     """Return 'audio' or 'ebook' based on which extensions are present in src
     (a file path or a directory). Audio takes priority — an audiobook often
@@ -1163,6 +1216,105 @@ def get_staging():
         return jsonify({'error': str(e)}), 400
     return jsonify({'tv': scan_staging(tv_base, 'tv'), 'movies': scan_staging(movies_base, 'movies'),
                     'bookshelf': scan_staging(bookshelf_base, 'bookshelf')})
+
+@app.route('/api/organize/suggestions')
+def organize_suggestions():
+    """Bookshelf staging items the auto-organizer can't handle (name doesn't
+    match "Author - Title"), each with a best-effort author/title suggestion
+    prefilled from epub metadata or filename patterns. A wrapper folder that
+    contains one subfolder per book (a series pack) gets one suggestion row
+    per book so each can be reviewed individually."""
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    cfg = load_config()
+    staging_base = cfg.get('staging_bookshelf', '')
+    packs = []
+    if not staging_base or not os.path.isdir(staging_base):
+        return jsonify({'suggestions': packs})
+    try:
+        entries = sorted(os.listdir(staging_base))
+    except OSError:
+        return jsonify({'suggestions': packs})
+    for name in entries:
+        src = os.path.join(staging_base, name)
+        name_for_parsing = os.path.splitext(name)[0] if os.path.isfile(src) else name
+        if not has_book(src):
+            continue
+        if parse_author_title(name_for_parsing):
+            continue  # the organizer will handle this one on its own
+        items = []
+        if os.path.isdir(src):
+            subs = [d for d in sorted(os.listdir(src))
+                    if os.path.isdir(os.path.join(src, d)) and has_book(os.path.join(src, d))]
+        else:
+            subs = []
+        if subs:
+            for sub in subs:
+                author, title = _suggest_author_title(os.path.join(src, sub), sub)
+                items.append({'subfolder': sub, 'author': author, 'title': title})
+        else:
+            author, title = _suggest_author_title(src, name_for_parsing)
+            items.append({'subfolder': None, 'author': author, 'title': title})
+        packs.append({'name': name, 'items': items})
+    return jsonify({'suggestions': packs})
+
+@app.route('/api/organize/apply', methods=['POST'])
+@limiter.limit("30 per minute")
+def organize_apply():
+    """Apply reviewed author/title values: rename the staging item(s) to the
+    "Author - Title" convention the organizer understands, then run the
+    organizer immediately so the books land in the library right away."""
+    if not is_authenticated():
+        return jsonify({'error': 'Unauthorized'}), 401
+    cfg = load_config()
+    data = request.json or {}
+    name = data.get('name', '')
+    items = data.get('items', [])
+    staging_base = cfg.get('staging_bookshelf', '')
+    try:
+        name = sanitize_path_component(name)
+    except ValueError:
+        return jsonify({'error': 'Invalid name'}), 400
+    src = os.path.join(staging_base, name)
+    if not staging_base or not os.path.exists(src):
+        return jsonify({'error': 'Item not found in staging'}), 404
+    if not items or not isinstance(items, list):
+        return jsonify({'error': 'No items to organize'}), 400
+    if not sync_lock.acquire(blocking=False):
+        return jsonify({'error': 'A sync is already running'}), 429
+    try:
+        renamed = 0
+        for item in items:
+            author = (item.get('author') or '').strip()
+            title = (item.get('title') or '').strip()
+            sub = item.get('subfolder')
+            try:
+                author = sanitize_path_component(author)
+                title = sanitize_path_component(title)
+                if sub is not None:
+                    sub = sanitize_path_component(sub)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            item_src = os.path.join(src, sub) if sub else src
+            if not os.path.exists(item_src):
+                return jsonify({'error': f'Not found in staging: {sub or name}'}), 404
+            dest = os.path.join(staging_base, f'{author} - {title}')
+            if os.path.isfile(item_src):
+                dest += os.path.splitext(item_src)[1].lower()
+            if os.path.exists(dest):
+                return jsonify({'error': f'Already exists in staging: {os.path.basename(dest)}'}), 409
+            os.rename(item_src, dest)
+            renamed += 1
+            logger.info('organize_apply: renamed "%s" -> "%s"', sub or name, os.path.basename(dest))
+        # After promoting books out of a series wrapper folder, clear away the
+        # leftover shell (covers/nfo only). A wrapper that still has book files
+        # (e.g. only some rows were approved) is kept for the next review.
+        if os.path.isdir(src) and not has_book(src):
+            shutil.rmtree(src, ignore_errors=True)
+        _do_organize_bookshelf_staging(cfg)
+        return jsonify({'success': True, 'renamed': renamed})
+    finally:
+        sync_lock.release()
 
 @app.route('/api/sync', methods=['POST'])
 @limiter.limit("6 per minute")

@@ -111,6 +111,15 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 .field input.ok { border-color:rgba(106,247,162,.5); }
 .field input.err { border-color:rgba(247,106,106,.5); }
 .check-row { display:flex; align-items:center; gap:.5rem; color:var(--muted); font-size:.75rem; }
+/* Organize review */
+.review-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:1rem 1.25rem; margin-bottom:.75rem; }
+.review-card-header { display:flex; align-items:center; justify-content:space-between; gap:.75rem; margin-bottom:.75rem; flex-wrap:wrap; }
+.review-card-name { font-size:.85rem; font-weight:600; word-break:break-all; }
+.review-row { display:flex; align-items:center; gap:.5rem; margin-bottom:.5rem; flex-wrap:wrap; }
+.review-row-sub { flex:0 0 180px; font-size:.72rem; color:var(--muted); word-break:break-all; }
+.review-row input { flex:1; min-width:140px; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:.4rem .6rem; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:.75rem; outline:none; }
+.review-row input:focus { border-color:var(--accent); }
+.review-row-label { font-size:.62rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
 /* Path browser */
 .path-input-row { display:flex; gap:.5rem; }
 .path-input-row input { flex:1; }
@@ -199,6 +208,16 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <button class="filter-btn" id="sf-ready" onclick="setStagingFilter('ready')">Ready</button>
   </div>
   <div id="staging-content"><div class="loading">Loading...</div></div>
+
+  <!-- Bookshelf items whose names the auto-organizer can't parse; review/edit
+       the suggested Author + Title then approve to organize them into the library -->
+  <div class="section" id="organize-review-section" style="display:none">
+    <div class="section-header">
+      <span class="section-title">Bookshelf — Needs Review</span>
+      <span class="badge" id="organize-review-count">—</span>
+    </div>
+    <div id="organize-review-content"></div>
+  </div>
 
   <!-- Sync History (DB) — edit/remove entries without going to the Sync tab -->
   <div class="section">
@@ -557,6 +576,7 @@ async function loadStaging() {
   updateStagingStats();
   renderStaging();
   loadSyncHistory();
+  loadOrganizeSuggestions();
 }
 
 // Best-effort client-side mirror of the backend's torrent_name_ignored() matching,
@@ -1200,6 +1220,111 @@ async function browseTo(path) {
     }
   } catch(e) {
     pbShowMessage(list, 'Network error');
+  }
+}
+
+// ── Bookshelf organize review ────────────────────────────────────────────────
+// Bookshelf staging items whose names don't match "Author - Title" can't be
+// auto-organized. The backend suggests author/title (from epub metadata or
+// filename patterns); the user reviews/edits here and approves per pack.
+async function loadOrganizeSuggestions() {
+  const section = document.getElementById('organize-review-section');
+  try {
+    const r = await fetch('/api/organize/suggestions');
+    if (handle401(r)) return;
+    const data = await r.json();
+    renderOrganizeSuggestions(data.suggestions || []);
+  } catch(e) {
+    section.style.display = 'none';
+  }
+}
+
+function renderOrganizeSuggestions(packs) {
+  const section = document.getElementById('organize-review-section');
+  const content = document.getElementById('organize-review-content');
+  document.getElementById('organize-review-count').textContent = packs.length;
+  content.innerHTML = '';
+  if (packs.length === 0) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  for (const pack of packs) {
+    const card = document.createElement('div');
+    card.className = 'review-card';
+
+    const header = document.createElement('div');
+    header.className = 'review-card-header';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'review-card-name';
+    nameEl.textContent = '📁 ' + pack.name;
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'btn-primary';
+    approveBtn.textContent = pack.items.length > 1 ? `Organize ${pack.items.length} books` : 'Organize';
+    header.appendChild(nameEl);
+    header.appendChild(approveBtn);
+    card.appendChild(header);
+
+    const rows = [];
+    for (const item of pack.items) {
+      const row = document.createElement('div');
+      row.className = 'review-row';
+      if (item.subfolder !== null) {
+        const sub = document.createElement('span');
+        sub.className = 'review-row-sub';
+        sub.textContent = item.subfolder;
+        row.appendChild(sub);
+      }
+      const authorLabel = document.createElement('span');
+      authorLabel.className = 'review-row-label';
+      authorLabel.textContent = 'Author';
+      const authorInput = document.createElement('input');
+      authorInput.type = 'text';
+      authorInput.value = item.author;
+      authorInput.placeholder = 'Author Name';
+      const titleLabel = document.createElement('span');
+      titleLabel.className = 'review-row-label';
+      titleLabel.textContent = 'Title';
+      const titleInput = document.createElement('input');
+      titleInput.type = 'text';
+      titleInput.value = item.title;
+      titleInput.placeholder = 'Book Title';
+      row.appendChild(authorLabel);
+      row.appendChild(authorInput);
+      row.appendChild(titleLabel);
+      row.appendChild(titleInput);
+      card.appendChild(row);
+      rows.push({ subfolder: item.subfolder, authorInput, titleInput });
+    }
+
+    approveBtn.addEventListener('click', async () => {
+      const items = rows.map(r => ({
+        subfolder: r.subfolder,
+        author: r.authorInput.value.trim(),
+        title: r.titleInput.value.trim()
+      }));
+      if (items.some(i => !i.author || !i.title)) {
+        alert('Every book needs both an Author and a Title.');
+        return;
+      }
+      approveBtn.disabled = true;
+      approveBtn.textContent = 'Organizing…';
+      try {
+        const r = await postJson('/api/organize/apply', { name: pack.name, items });
+        if (handle401(r)) return;
+        const res = await r.json();
+        if (!r.ok || !res.success) {
+          alert(res.error || 'Organize failed');
+          approveBtn.disabled = false;
+          approveBtn.textContent = 'Organize';
+          return;
+        }
+        loadStaging();  // re-renders staging list, suggestions, and history
+      } catch(e) {
+        alert('Network error');
+        approveBtn.disabled = false;
+        approveBtn.textContent = 'Organize';
+      }
+    });
+
+    content.appendChild(card);
   }
 }
 </script>
