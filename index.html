@@ -1242,10 +1242,14 @@ async function loadOrganizeSuggestions() {
 function renderOrganizeSuggestions(packs) {
   const section = document.getElementById('organize-review-section');
   const content = document.getElementById('organize-review-content');
-  document.getElementById('organize-review-count').textContent = packs.length;
+  // Badge shows total books needing review, not pack count - a series pack
+  // wrapper is one pack but many books.
+  const bookCount = packs.reduce((n, p) => n + p.items.length, 0);
+  document.getElementById('organize-review-count').textContent = bookCount;
   content.innerHTML = '';
   if (packs.length === 0) { section.style.display = 'none'; return; }
   section.style.display = '';
+  let reviewInputSeq = 0;  // unique input ids for label associations
   for (const pack of packs) {
     const card = document.createElement('div');
     card.className = 'review-card';
@@ -1272,18 +1276,23 @@ function renderOrganizeSuggestions(packs) {
         sub.textContent = item.subfolder;
         row.appendChild(sub);
       }
-      const authorLabel = document.createElement('span');
+      const rowId = reviewInputSeq++;
+      const authorLabel = document.createElement('label');
       authorLabel.className = 'review-row-label';
       authorLabel.textContent = 'Author';
+      authorLabel.htmlFor = `review-author-${rowId}`;
       const authorInput = document.createElement('input');
       authorInput.type = 'text';
+      authorInput.id = `review-author-${rowId}`;
       authorInput.value = item.author;
       authorInput.placeholder = 'Author Name';
-      const titleLabel = document.createElement('span');
+      const titleLabel = document.createElement('label');
       titleLabel.className = 'review-row-label';
       titleLabel.textContent = 'Title';
+      titleLabel.htmlFor = `review-title-${rowId}`;
       const titleInput = document.createElement('input');
       titleInput.type = 'text';
+      titleInput.id = `review-title-${rowId}`;
       titleInput.value = item.title;
       titleInput.placeholder = 'Book Title';
       row.appendChild(authorLabel);
@@ -1312,8 +1321,13 @@ function renderOrganizeSuggestions(packs) {
         const res = await r.json();
         if (!r.ok || !res.success) {
           alert(res.error || 'Organize failed');
+          // Restore the button in case the refresh below fails, then re-sync
+          // the whole view - the server may have renamed some items before
+          // failing (e.g. a mid-batch permission error), so a stale card
+          // would send already-applied rows on retry.
           approveBtn.disabled = false;
           approveBtn.textContent = 'Organize';
+          loadStaging();
           return;
         }
         loadStaging();  // re-renders staging list, suggestions, and history
@@ -1321,6 +1335,7 @@ function renderOrganizeSuggestions(packs) {
         alert('Network error');
         approveBtn.disabled = false;
         approveBtn.textContent = 'Organize';
+        loadStaging();  // request may have reached the server - re-sync the view
       }
     });
 

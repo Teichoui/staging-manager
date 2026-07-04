@@ -1283,7 +1283,11 @@ def organize_apply():
     if not sync_lock.acquire(blocking=False):
         return jsonify({'error': 'A sync is already running'}), 429
     try:
-        renamed = 0
+        # Pass 1: validate every row before touching the filesystem, so a bad
+        # entry can't leave the batch half-renamed (approve-all on a series
+        # pack should be all-or-nothing).
+        moves = []
+        seen_dests = set()
         for item in items:
             author = (item.get('author') or '').strip()
             title = (item.get('title') or '').strip()
@@ -1301,11 +1305,23 @@ def organize_apply():
             dest = os.path.join(staging_base, f'{author} - {title}')
             if os.path.isfile(item_src):
                 dest += os.path.splitext(item_src)[1].lower()
-            if os.path.exists(dest):
+            if os.path.exists(dest) or dest in seen_dests:
                 return jsonify({'error': f'Already exists in staging: {os.path.basename(dest)}'}), 409
-            os.rename(item_src, dest)
-            renamed += 1
-            logger.info('organize_apply: renamed "%s" -> "%s"', sub or name, os.path.basename(dest))
+            seen_dests.add(dest)
+            moves.append((item_src, dest, sub))
+        # Pass 2: everything validated, do the renames.
+        renamed = 0
+        try:
+            for item_src, dest, sub in moves:
+                os.rename(item_src, dest)
+                renamed += 1
+                logger.info('organize_apply: renamed "%s" -> "%s"', sub or name, os.path.basename(dest))
+        except OSError as e:
+            # A rename itself failed (permissions, disk). Report what happened;
+            # already-renamed items are valid "Author - Title" entries that the
+            # organizer will still pick up, so nothing is lost.
+            logger.warning('organize_apply: rename failed after %d of %d: %s', renamed, len(moves), e)
+            return jsonify({'error': f'Rename failed after {renamed} of {len(moves)} items'}), 500
         # After promoting books out of a series wrapper folder, clear away the
         # leftover shell (covers/nfo only). A wrapper that still has book files
         # (e.g. only some rows were approved) is kept for the next review.
