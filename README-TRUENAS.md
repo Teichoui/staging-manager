@@ -50,6 +50,7 @@ It is meant to replace the quick SSH chores from the media setup:
 - Bind address: `STAGING_MANAGER_HOST`, default `127.0.0.1`; the example manifests set `0.0.0.0` for container publishing.
 - First-run setup requires a setup token. Set `STAGING_MANAGER_SETUP_TOKEN` or read `/config/setup.token` from the app config dataset.
 - First run redirects to `/setup`
+- Forgot the username or password? Visit `/recover` and authenticate with the same setup token to reset both - no need to hand-edit `config.json` on the host.
 - Runs HTTP by default. Set `STAGING_MANAGER_HTTPS=true` if you want the app to serve its own self-signed HTTPS endpoint.
 - Set `STAGING_MANAGER_SECURE_COOKIES=true` only when users reach the app over HTTPS.
 - Set `STAGING_MANAGER_TRUST_PROXY=true` only when the app is behind a trusted reverse proxy that overwrites `X-Forwarded-For`.
