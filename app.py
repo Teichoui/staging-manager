@@ -839,7 +839,7 @@ def recover_account():
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     password = data.get('password','')
-    if not username or len(password) < 8:
+    if not isinstance(password, str) or not username or len(password) < 8:
         return jsonify({'error': 'Username required and password must be 8+ characters'}), 400
     cfg = load_config()
     cfg['username'] = username
