@@ -353,6 +353,15 @@ def is_locked(ip):
     failed_attempts[ip] = [t for t in failed_attempts[ip] if t > cutoff]
     return len(failed_attempts[ip]) >= cfg['max_login_attempts']
 
+def _auth_epoch(cfg):
+    """Fingerprint of the current password hash, stashed in the session at
+    login. The bcrypt hash string changes (new random salt) any time the
+    password is reset - via account recovery or a normal Settings change -
+    so if it no longer matches what's in the session, that session predates
+    the reset and is treated as logged out. Without this, a stale or stolen
+    session cookie would keep working right through a credential reset."""
+    return cfg.get('password_hash', '')[-16:]
+
 def is_authenticated():
     if not session.get('authenticated'):
         return False
@@ -361,13 +370,16 @@ def is_authenticated():
     if time.time() - session.get('login_time', 0) > timeout * 60:
         session.clear()
         return False
+    if session.get('auth_epoch') != _auth_epoch(cfg):
+        session.clear()
+        return False
     return True
 
 def needs_setup():
     cfg = load_config()
     return not cfg.get('password_hash')
 
-CSRF_EXEMPT = {'/api/login', '/api/setup'}
+CSRF_EXEMPT = {'/api/login', '/api/setup', '/api/recover-account'}
 
 @app.before_request
 def csrf_protect():
@@ -722,6 +734,13 @@ def setup_page():
     get_setup_token()
     return send_from_directory(APP_DIR, 'setup.html')
 
+@app.route('/recover')
+def recover_page():
+    # Unlike /setup, deliberately available regardless of needs_setup() -
+    # this is how you regain access to an already-configured install.
+    get_setup_token()
+    return send_from_directory(APP_DIR, 'recover.html')
+
 @app.route('/api/health')
 def health():
     return jsonify({'status': 'ok'})
@@ -755,6 +774,7 @@ def login():
         session['login_time'] = time.time()
         session['csrf_token'] = secrets.token_urlsafe(32)
         session['remember_me'] = remember
+        session['auth_epoch'] = _auth_epoch(cfg)
         session.permanent = True
         app.permanent_session_lifetime = timedelta(days=30) if remember else timedelta(minutes=load_config().get('session_timeout', 60))
         logger.info('login success ip=%s user=%s', ip, cfg['username'])
@@ -797,6 +817,44 @@ def setup():
     cfg['username'] = username
     cfg['password_hash'] = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     save_config(cfg)
+    return jsonify({'success': True})
+
+@app.route('/api/recover-account', methods=['POST'])
+@limiter.limit("5 per minute")
+def recover_account():
+    """Reset username/password on an already-configured install. Gated by
+    the same setup token as first-run setup (a secret only readable from
+    the host filesystem or an env var on the container) rather than the
+    current password, since the whole point is recovering from a lost
+    password. Unlike /api/setup this works even when an account already
+    exists - that's the only functional difference between the two routes."""
+    data = request.json or {}
+    supplied_token = data.get('setup_token') or request.headers.get('X-Setup-Token') or ''
+    expected_token = get_setup_token()
+    if not supplied_token or not secrets.compare_digest(str(supplied_token), expected_token):
+        logger.warning('account recovery token failure ip=%s', get_ip())
+        return jsonify({'error': 'Invalid setup token'}), 403
+    try:
+        username = validate_username(data.get('username',''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    password = data.get('password','')
+    if not isinstance(password, str) or not username or len(password) < 8:
+        return jsonify({'error': 'Username required and password must be 8+ characters'}), 400
+    cfg = load_config()
+    cfg['username'] = username
+    cfg['password_hash'] = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    save_config(cfg)
+    # Someone using recovery has very likely just tripped the login lockout
+    # (that's often *why* they needed to recover) - clear it for this IP so
+    # the freshly-reset credentials aren't immediately blocked by the old
+    # failed-attempt count.
+    failed_attempts[get_ip()] = []
+    # Credentials just changed for a (possibly still-logged-in) account -
+    # drop this request's own session and rely on _auth_epoch() to silently
+    # invalidate any other active session on its next request.
+    session.clear()
+    logger.warning('account recovered via setup token ip=%s new_user=%s', get_ip(), username)
     return jsonify({'success': True})
 
 @app.route('/api/csrf')
@@ -924,6 +982,12 @@ def save_settings():
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
     save_config(cfg)
+    # If password_hash changed above, _auth_epoch(cfg) is now different from
+    # what this session stored at login - refresh it so is_authenticated()
+    # doesn't treat the very session that just made this change as stale.
+    # (Other sessions elsewhere are still correctly invalidated, since they
+    # never get this update.)
+    session['auth_epoch'] = _auth_epoch(cfg)
     reschedule_sync(cfg.get('sync_interval', 5))
     logger.info('settings updated user=%s', cfg.get('username', ''))
     return jsonify({'success': True})
