@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py index.html login.html setup.html ./
+COPY app.py index.html login.html setup.html recover.html ./
 
 RUN mkdir -p /config /media \
     && groupadd --system --gid 568 apps \

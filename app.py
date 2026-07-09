@@ -845,6 +845,11 @@ def recover_account():
     cfg['username'] = username
     cfg['password_hash'] = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     save_config(cfg)
+    # Someone using recovery has very likely just tripped the login lockout
+    # (that's often *why* they needed to recover) - clear it for this IP so
+    # the freshly-reset credentials aren't immediately blocked by the old
+    # failed-attempt count.
+    failed_attempts[get_ip()] = []
     # Credentials just changed for a (possibly still-logged-in) account -
     # drop this request's own session and rely on _auth_epoch() to silently
     # invalidate any other active session on its next request.
@@ -977,6 +982,12 @@ def save_settings():
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
     save_config(cfg)
+    # If password_hash changed above, _auth_epoch(cfg) is now different from
+    # what this session stored at login - refresh it so is_authenticated()
+    # doesn't treat the very session that just made this change as stale.
+    # (Other sessions elsewhere are still correctly invalidated, since they
+    # never get this update.)
+    session['auth_epoch'] = _auth_epoch(cfg)
     reschedule_sync(cfg.get('sync_interval', 5))
     logger.info('settings updated user=%s', cfg.get('username', ''))
     return jsonify({'success': True})
