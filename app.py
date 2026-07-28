@@ -426,6 +426,31 @@ def api_get(url, api_key):
     with urllib.request.urlopen(req, context=ctx, timeout=10) as r:  # nosec B310
         return json.loads(r.read())
 
+def trigger_arr_import(cfg, app_type, path):
+    """Tell Sonarr/Radarr to scan+import a path we just finished syncing.
+
+    Download-client "completed download handling" is disabled in both apps
+    (see Settings) so they never race staging-manager's own async rclone
+    copy by importing straight from the download client's remote path
+    mapping before our copy lands. This is the only trigger for import now.
+    """
+    if app_type == 'sonarr':
+        url = f"{validate_service_url(cfg['sonarr_url'], 'sonarr_url')}/api/v3/command"
+        key = cfg['sonarr_api_key']
+        body = json.dumps({'name': 'DownloadedEpisodesScan', 'path': path}).encode()
+    else:
+        url = f"{validate_service_url(cfg['radarr_url'], 'radarr_url')}/api/v3/command"
+        key = cfg['radarr_api_key']
+        body = json.dumps({'name': 'DownloadedMoviesScan', 'path': path}).encode()
+    req = urllib.request.Request(url, data=body, method='POST',
+        headers={'X-Api-Key': key, 'Content-Type': 'application/json'})
+    ctx = ssl.create_default_context()
+    if not cfg.get('verify_tls'):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, context=ctx, timeout=10) as r:  # nosec B310
+        return json.loads(r.read())
+
 def truenas_api(method, endpoint, data=None):
     cfg = load_config()
     base_url = validate_service_url(cfg['truenas_url'], 'truenas_url')
@@ -624,7 +649,8 @@ def run_torrent_sync():
                 cmd = [RCLONE_BIN, copy_verb, sftp_src, local_path,
                        '--log-file', RCLONE_TORRENT_LOG, '--log-level', 'INFO',
                        '--stats', '5s', '--stats-log-level', 'INFO',
-                       '--transfers', str(cfg.get('rclone_transfers', 8))]
+                       '--transfers', str(cfg.get('rclone_transfers', 8)),
+                       '--multi-thread-streams', '0']
                 cmd.extend(sftp_flags)
                 # rclone refuses filters on a single-file source/copyto ("can't limit
                 # to single files when using filters") — excludes only make sense for
@@ -666,6 +692,14 @@ def run_torrent_sync():
                             )
                             conn.commit()
                             logger.info('torrent sync success (verified): %s', t['name'])
+                            if category in ('tv', 'movies'):
+                                try:
+                                    trigger_arr_import(cfg, 'sonarr' if category == 'tv' else 'radarr', local_path)
+                                    logger.info('triggered %s import: %s',
+                                                'sonarr' if category == 'tv' else 'radarr', local_path)
+                                except Exception as e:
+                                    logger.warning('failed to trigger %s import for %s: %s',
+                                                   'sonarr' if category == 'tv' else 'radarr', t['name'], e)
                         else:
                             logger.warning(
                                 'torrent sync: no video files after copy '
