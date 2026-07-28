@@ -433,7 +433,14 @@ def trigger_arr_import(cfg, app_type, path):
     (see Settings) so they never race staging-manager's own async rclone
     copy by importing straight from the download client's remote path
     mapping before our copy lands. This is the only trigger for import now.
+
+    Sonarr/Radarr run in their own containers with the shared media directory
+    bind-mounted at the host path (TRUENAS_MEDIA_ROOT), not staging-manager's
+    own CONTAINER_MEDIA_ROOT — translate before sending or they log "doesn't
+    exist" and silently never import.
     """
+    if path.startswith(CONTAINER_MEDIA_ROOT):
+        path = TRUENAS_MEDIA_ROOT + path[len(CONTAINER_MEDIA_ROOT):]
     if app_type == 'sonarr':
         url = f"{validate_service_url(cfg['sonarr_url'], 'sonarr_url')}/api/v3/command"
         key = cfg['sonarr_api_key']
