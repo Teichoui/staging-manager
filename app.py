@@ -113,7 +113,7 @@ DEFAULT_CONFIG = {
     "tv_label": "sonarr",
     "movies_label": "radarr",
     "bookshelf_label": "readarr",
-    "rclone_excludes": ["**/*.rar", "**/*.r[0-9][0-9]"],
+    "rclone_excludes": ["*.rar", "*.r[0-9][0-9]"],
     "ignore_torrents": [],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
