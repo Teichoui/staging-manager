@@ -1858,7 +1858,11 @@ def parse_rclone_speed():
                 line
             )
             if m:
-                return m.group(2), m.group(1) + '%'
+                # rclone's own progress line can briefly exceed 100% mid-transfer
+                # when it revises its size estimate (seen live: 121% on a completed
+                # file that was later confirmed byte-perfect) - clamp for display.
+                pct = min(int(m.group(1)), 100)
+                return m.group(2), f'{pct}%'
     except Exception:
         pass
     return None, None
