@@ -458,6 +458,73 @@ def trigger_arr_import(cfg, app_type, path):
     with urllib.request.urlopen(req, context=ctx, timeout=10) as r:  # nosec B310
         return json.loads(r.read())
 
+# Backoff schedule for re-triggering an import that hasn't landed yet: retry
+# every 15min for the first 3 attempts, then every hour up to 6, then every
+# 3h up to 10, then settle into a 12h heartbeat indefinitely rather than
+# giving up - a permanently-stuck item should still self-heal if the
+# underlying cause (e.g. a transient Sonarr error) goes away on its own.
+IMPORT_RETRY_SCHEDULE = [(3, 15 * 60), (6, 60 * 60), (10, 3 * 60 * 60)]
+IMPORT_RETRY_MAX_INTERVAL = 12 * 60 * 60
+IMPORT_RETRY_WARN_THRESHOLD = 10
+
+def _import_retry_interval(attempts):
+    for max_attempts, interval in IMPORT_RETRY_SCHEDULE:
+        if attempts < max_attempts:
+            return interval
+    return IMPORT_RETRY_MAX_INTERVAL
+
+def reconcile_pending_imports(cfg):
+    """Catch synced_torrents rows whose import never actually landed a file
+    in the Sonarr/Radarr library. trigger_arr_import() at sync time is
+    fire-and-forget - if Sonarr rejects the import, the API call fails
+    transiently, or (as happened for everything synced before the import
+    trigger existed at all) it never ran, a 'copied' row sits there forever
+    with no signal that nothing arrived, since the main sync loop only looks
+    at torrents it hasn't seen before. This walks every non-imported row,
+    confirms via the filesystem whether Sonarr/Radarr actually consumed the
+    staged copy, and re-triggers the import on a backoff schedule if not."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT id, torrent_name, local_path, category, import_attempts, import_last_attempt "
+            "FROM synced_torrents WHERE status != 'imported'"
+        ).fetchall()
+        now = time.time()
+        for row_id, name, local_path, category, attempts, last_attempt in rows:
+            attempts = attempts or 0
+            has_media = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
+            if not has_media:
+                # Sonarr/Radarr's import moves (or otherwise fully consumes)
+                # the staged copy - gone means it landed in the library.
+                conn.execute("UPDATE synced_torrents SET status='imported' WHERE id=?", (row_id,))
+                conn.commit()
+                continue
+            if category not in ('tv', 'movies'):
+                continue
+            last_attempt_ts = 0
+            if last_attempt:
+                try:
+                    last_attempt_ts = datetime.fromisoformat(last_attempt).timestamp()
+                except ValueError:
+                    pass
+            if now - last_attempt_ts < _import_retry_interval(attempts):
+                continue
+            try:
+                trigger_arr_import(cfg, 'sonarr' if category == 'tv' else 'radarr', local_path)
+                logger.info('reconcile: re-triggered %s import (attempt %d): %s',
+                            'sonarr' if category == 'tv' else 'radarr', attempts + 1, name)
+            except Exception as e:
+                logger.warning('reconcile: failed to re-trigger import for %s: %s', name, e)
+            conn.execute(
+                'UPDATE synced_torrents SET import_attempts=?, import_last_attempt=? WHERE id=?',
+                (attempts + 1, datetime.now(timezone.utc).isoformat(), row_id)
+            )
+            conn.commit()
+            if attempts + 1 == IMPORT_RETRY_WARN_THRESHOLD:
+                logger.warning(
+                    'reconcile: %s has failed to import %d times - may need manual review '
+                    '(quality rejection, naming mismatch, etc): %s',
+                    name, attempts + 1, local_path)
+
 def truenas_api(method, endpoint, data=None):
     cfg = load_config()
     base_url = validate_service_url(cfg['truenas_url'], 'truenas_url')
@@ -494,8 +561,16 @@ def init_db():
             local_path TEXT NOT NULL,
             category TEXT DEFAULT 'tv',
             synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'copied'
+            status TEXT DEFAULT 'copied',
+            import_attempts INTEGER DEFAULT 0,
+            import_last_attempt DATETIME
         )''')
+        # Migrate pre-existing rows from before these columns existed.
+        existing_cols = {r[1] for r in conn.execute('PRAGMA table_info(synced_torrents)')}
+        if 'import_attempts' not in existing_cols:
+            conn.execute('ALTER TABLE synced_torrents ADD COLUMN import_attempts INTEGER DEFAULT 0')
+        if 'import_last_attempt' not in existing_cols:
+            conn.execute('ALTER TABLE synced_torrents ADD COLUMN import_last_attempt DATETIME')
         conn.commit()
 
 # ── rTorrent XMLRPC client ────────────────────────────────────────────────────
@@ -691,11 +766,17 @@ def run_torrent_sync():
                     if checked_ok:
                         is_complete = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
                         if is_complete:
+                            import_attempts = 1 if category in ('tv', 'movies') else 0
+                            import_last_attempt = (
+                                datetime.now(timezone.utc).isoformat() if import_attempts else None
+                            )
                             conn.execute(
                                 'INSERT OR IGNORE INTO synced_torrents '
-                                '(torrent_hash, torrent_name, remote_path, local_path, category) '
-                                'VALUES (?,?,?,?,?)',
-                                (t['hash'], t['name'], remote_path, local_path, category)
+                                '(torrent_hash, torrent_name, remote_path, local_path, category, '
+                                'import_attempts, import_last_attempt) '
+                                'VALUES (?,?,?,?,?,?,?)',
+                                (t['hash'], t['name'], remote_path, local_path, category,
+                                 import_attempts, import_last_attempt)
                             )
                             conn.commit()
                             logger.info('torrent sync success (verified): %s', t['name'])
@@ -727,6 +808,7 @@ def run_torrent_sync():
                         'torrent sync failed: name=%s returncode=%d log=%s',
                         t['name'], result.returncode, rclone_tail[:500])
 
+        reconcile_pending_imports(cfg)
         organize_bookshelf_staging(cfg)
 
         torrent_sync_state['last_sync'] = time.time()
