@@ -466,6 +466,14 @@ def trigger_arr_import(cfg, app_type, path):
 IMPORT_RETRY_SCHEDULE = [(3, 15 * 60), (6, 60 * 60), (10, 3 * 60 * 60)]
 IMPORT_RETRY_MAX_INTERVAL = 12 * 60 * 60
 IMPORT_RETRY_WARN_THRESHOLD = 10
+# reconcile_pending_imports runs synchronously inside run_torrent_sync while
+# torrent_sync_lock is held - cap how many trigger_arr_import calls (each a
+# blocking HTTP request, up to 10s) it can make in one pass so a large batch
+# of simultaneously-eligible rows (e.g. right after this feature first
+# deploys) can't stall the sync loop for minutes. Anything past the cap just
+# waits for next cycle's pass, since import_last_attempt is only updated for
+# rows actually retried.
+IMPORT_RECONCILE_MAX_PER_PASS = 5
 
 def _import_retry_interval(attempts):
     for max_attempts, interval in IMPORT_RETRY_SCHEDULE:
@@ -489,6 +497,7 @@ def reconcile_pending_imports(cfg):
             "FROM synced_torrents WHERE status != 'imported'"
         ).fetchall()
         now = time.time()
+        triggered_this_pass = 0
         for row_id, name, local_path, category, attempts, last_attempt in rows:
             attempts = attempts or 0
             has_media = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
@@ -508,6 +517,9 @@ def reconcile_pending_imports(cfg):
                     pass
             if now - last_attempt_ts < _import_retry_interval(attempts):
                 continue
+            if triggered_this_pass >= IMPORT_RECONCILE_MAX_PER_PASS:
+                continue
+            triggered_this_pass += 1
             try:
                 trigger_arr_import(cfg, 'sonarr' if category == 'tv' else 'radarr', local_path)
                 logger.info('reconcile: re-triggered %s import (attempt %d): %s',
