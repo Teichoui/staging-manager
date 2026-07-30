@@ -843,7 +843,6 @@ def run_torrent_sync():
 
     except Exception as e:
         logger.exception('torrent sync error: %s', e)
-        torrent_sync_state['status'] = 'error'
         torrent_sync_state['last_error'] = str(e)
     finally:
         torrent_sync_state['active_torrent'] = None
@@ -858,12 +857,12 @@ def run_torrent_sync():
                 logger.warning('torrent sync: reconcile_pending_imports failed: %s', e)
         # Status must stay 'syncing' through reconciliation above, not just
         # the copy loop - /api/torrent-sync/now checks this status to decide
-        # whether to spawn a new sync thread, and flipping to 'idle' early
-        # (while this function still holds torrent_sync_lock) makes it spawn
-        # a thread that immediately fails to acquire the lock and silently
-        # no-ops, while the endpoint has already told the caller it started.
-        if sync_ok:
-            torrent_sync_state['status'] = 'idle'
+        # whether to spawn a new sync thread, and flipping to a terminal
+        # state early (while this function still holds torrent_sync_lock)
+        # makes it spawn a thread that immediately fails to acquire the lock
+        # and silently no-ops, while the endpoint has already told the
+        # caller it started. Applies on the error path too, not just success.
+        torrent_sync_state['status'] = 'idle' if sync_ok else 'error'
         torrent_sync_lock.release()
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
