@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -498,8 +498,18 @@ def reconcile_pending_imports(cfg):
         ).fetchall()
         now = time.time()
         triggered_this_pass = 0
-        for row_id, name, local_path, category, attempts, last_attempt in rows:
-            attempts = attempts or 0
+        for row_id, name, local_path, category, raw_attempts, last_attempt in rows:
+            attempts = raw_attempts or 0
+            # has_video()/has_book() return False both when the staged copy is
+            # genuinely gone (imported) AND when the staging mount is merely
+            # unavailable right now (offline NFS mount, permissions blip,
+            # reconfigured staging path) - os.walk() on a missing/unreadable
+            # path silently yields nothing rather than raising. Only trust a
+            # "gone" result if the staging root itself is actually reachable,
+            # otherwise this would falsely mark rows imported and stop
+            # retrying them forever the next time storage hiccups.
+            if not os.path.isdir(os.path.dirname(local_path)):
+                continue
             has_media = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
             if not has_media:
                 # Sonarr/Radarr's import moves (or otherwise fully consumes)
@@ -511,10 +521,8 @@ def reconcile_pending_imports(cfg):
                 continue
             last_attempt_ts = 0
             if last_attempt:
-                try:
+                with contextlib.suppress(ValueError):
                     last_attempt_ts = datetime.fromisoformat(last_attempt).timestamp()
-                except ValueError:
-                    pass
             if now - last_attempt_ts < _import_retry_interval(attempts):
                 continue
             if triggered_this_pass >= IMPORT_RECONCILE_MAX_PER_PASS:
@@ -666,6 +674,7 @@ def run_torrent_sync():
         return
     torrent_sync_state['status'] = 'syncing'
     torrent_sync_state['last_error'] = None
+    cfg = None
     try:
         cfg = load_config()
         torrents = query_rtorrent(cfg)
@@ -820,7 +829,6 @@ def run_torrent_sync():
                         'torrent sync failed: name=%s returncode=%d log=%s',
                         t['name'], result.returncode, rclone_tail[:500])
 
-        reconcile_pending_imports(cfg)
         organize_bookshelf_staging(cfg)
 
         torrent_sync_state['last_sync'] = time.time()
@@ -833,6 +841,15 @@ def run_torrent_sync():
         torrent_sync_state['last_error'] = str(e)
         torrent_sync_state['active_torrent'] = None
     finally:
+        # Runs even if query_rtorrent()/the copy loop above failed (e.g. a
+        # seedbox/rTorrent outage) - reconciling already-staged imports has
+        # no dependency on rTorrent being reachable, so a torrent-sync
+        # failure shouldn't also stall recovery of the import backlog.
+        if cfg is not None:
+            try:
+                reconcile_pending_imports(cfg)
+            except Exception as e:
+                logger.warning('torrent sync: reconcile_pending_imports failed: %s', e)
         torrent_sync_lock.release()
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
