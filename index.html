@@ -20,6 +20,7 @@ nav { background:var(--surface); border-bottom:1px solid var(--border); padding:
 .nav-tab { padding:.4rem .9rem; border-radius:5px; border:1px solid transparent; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:.78rem; color:var(--muted); background:none; transition:all .15s; }
 .nav-tab:hover { color:var(--text); }
 .nav-tab.active { border-color:var(--border); background:var(--surface2); color:var(--accent); }
+.nav-badge { display:inline-block; margin-left:.4rem; background:var(--warn); color:#1a1400; font-size:.65rem; font-weight:700; border-radius:999px; padding:.05rem .4rem; vertical-align:middle; }
 .nav-right { margin-left:auto; display:flex; gap:.5rem; }
 .nav-btn { padding:.35rem .8rem; border:1px solid var(--border); background:none; color:var(--muted); border-radius:4px; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:.72rem; transition:all .15s; }
 .nav-btn:hover { color:var(--text); border-color:#2e2e4e; }
@@ -49,6 +50,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
 /* Sections */
 .section { margin-bottom:2rem; }
+.review-attention { border:1px solid rgba(247,217,106,.4); border-radius:8px; padding:1rem; background:rgba(247,217,106,.05); }
 .section-header { display:flex; align-items:center; gap:.75rem; margin-bottom:.75rem; }
 .section-title { font-family:'Syne',sans-serif; font-size:1rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
 .badge { font-size:.65rem; padding:.2rem .5rem; border-radius:3px; background:var(--border); color:var(--muted); }
@@ -176,7 +178,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
 
 <nav>
   <span class="nav-logo">⚡ MEDIA</span>
-  <button class="nav-tab active" onclick="switchTab('staging')">📦 Staging</button>
+  <button class="nav-tab active" onclick="switchTab('staging')">📦 Staging<span class="nav-badge" id="nav-review-badge" style="display:none">0</span></button>
   <button class="nav-tab" onclick="switchTab('seedbox')">🌐 Seedbox</button>
   <button class="nav-tab" onclick="switchTab('sync')">⚡ Sync</button>
   <button class="nav-tab" onclick="switchTab('errors')">⚠️ Errors</button>
@@ -207,17 +209,19 @@ main { flex:1; padding:2rem; overflow-y:auto; }
     <button class="filter-btn" id="sf-bookshelf" onclick="setStagingFilter('bookshelf')">Bookshelf</button>
     <button class="filter-btn" id="sf-ready" onclick="setStagingFilter('ready')">Ready</button>
   </div>
-  <div id="staging-content"><div class="loading">Loading...</div></div>
-
   <!-- Bookshelf items whose names the auto-organizer can't parse; review/edit
-       the suggested Author + Title then approve to organize them into the library -->
-  <div class="section" id="organize-review-section" style="display:none">
+       the suggested Author + Title then approve to organize them into the library.
+       Placed above the folder list (rather than below Sync History) so it's the
+       first thing visible on the tab instead of easy to miss below a long list. -->
+  <div class="section review-attention" id="organize-review-section" style="display:none">
     <div class="section-header">
-      <span class="section-title">Bookshelf — Needs Review</span>
+      <span class="section-title">⚠️ Bookshelf — Needs Review</span>
       <span class="badge" id="organize-review-count">—</span>
     </div>
     <div id="organize-review-content"></div>
   </div>
+
+  <div id="staging-content"><div class="loading">Loading...</div></div>
 
   <!-- Sync History (DB) — edit/remove entries without going to the Sync tab -->
   <div class="section">
@@ -1246,6 +1250,9 @@ function renderOrganizeSuggestions(packs) {
   // wrapper is one pack but many books.
   const bookCount = packs.reduce((n, p) => n + p.items.length, 0);
   document.getElementById('organize-review-count').textContent = bookCount;
+  const navBadge = document.getElementById('nav-review-badge');
+  navBadge.textContent = bookCount;
+  navBadge.style.display = bookCount > 0 ? '' : 'none';
   content.innerHTML = '';
   if (packs.length === 0) { section.style.display = 'none'; return; }
   section.style.display = '';
