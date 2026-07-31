@@ -1184,10 +1184,20 @@ def has_book(path):
 
 def sanitize_path_component(name):
     """Reject anything that could escape the intended destination directory
-    when building a path from user/torrent-supplied text (author, title)."""
+    when building a path from user/torrent-supplied text (author, title), and
+    strip characters ZFS/Linux allow but Windows/SMB clients can't display.
+    A book title like "What Price Love?" is a perfectly valid ZFS folder
+    name, but Samba can't represent '?' (or <>:"|*, or a trailing dot/space)
+    to a Windows client and silently falls back to a mangled 8.3 alias
+    (e.g. "WFXKJU~F") instead - the folder is still there, just unreadable
+    from Windows/SMB. Stripping keeps the library browsable everywhere."""
     name = name.strip()
     if not name or name in ('.', '..') or '/' in name or '\\' in name:
         raise ValueError(f'unsafe path component: {name!r}')
+    original = name
+    name = re.sub(r'[<>:"|?*]', '', name).rstrip('. ')
+    if not name:
+        raise ValueError(f'name is empty after removing characters invalid on Windows/SMB: {original!r}')
     return name
 
 def parse_author_title(folder_name):
