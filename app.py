@@ -960,7 +960,6 @@ def validate_path_component(name):
     suggestions endpoint sends back the real on-disk name and apply has to
     find that same path again. For a NEW path being created, see
     sanitize_path_component instead."""
-    name = name.strip()
     if not name or name in ('.', '..') or '/' in name or '\\' in name:
         raise ValueError(f'unsafe path component: {name!r}')
     return name
@@ -1169,6 +1168,12 @@ def _do_organize_bookshelf_staging(cfg):
                     continue
                 moved_any = False
                 skipped_any = False  # True if any dest already existed
+                # Same many-to-one sanitization risk as dest_dirs_this_pass above,
+                # but within a single item's own nested files: two different raw
+                # subfolder names or filenames (e.g. "CD:1" and "CD1") can sanitize
+                # to the same nested destination path. Track claimed final paths so
+                # a later raw source can't silently overwrite an earlier one's file.
+                claimed_targets = {}
                 # Walk recursively (matching has_book()'s own traversal) - multi-disc
                 # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
                 # top-level-only listing would miss them entirely.
@@ -1193,8 +1198,18 @@ def _do_organize_bookshelf_staging(cfg):
                             skipped_any = True
                             continue
                         dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                        dest_path = os.path.join(dest_subdir, dest_fname)
+                        claimed_source = (dirpath, fname)
+                        prior_source = claimed_targets.get(dest_path)
+                        if prior_source is not None and prior_source != claimed_source:
+                            logger.warning('organize_bookshelf_staging: skipping "%s" in "%s" - sanitized path collides '
+                                            'with "%s" already claimed this pass (%s) - resolve manually',
+                                            fname, rel_dir, prior_source[1], dest_path)
+                            skipped_any = True
+                            continue
+                        claimed_targets[dest_path] = claimed_source
                         os.makedirs(dest_subdir, exist_ok=True)
-                        if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, dest_fname)):
+                        if _move_book_file(os.path.join(dirpath, fname), dest_path):
                             moved_any = True
                         else:
                             skipped_any = True
