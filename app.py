@@ -1166,7 +1166,7 @@ def _do_organize_bookshelf_staging(cfg):
                 except ValueError as e:
                     logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
                     continue
-            dest_dirs_this_pass[dest_dir] = name
+                dest_dirs_this_pass[dest_dir] = name
             try:
                 os.makedirs(dest_dir, exist_ok=True)
                 if is_file:
@@ -1176,6 +1176,12 @@ def _do_organize_bookshelf_staging(cfg):
                     continue
                 moved_any = False
                 skipped_any = False  # True if any dest already existed
+                # Only claim dest_dir once a nested file actually reaches
+                # _move_book_file (moved, or left in place because the
+                # destination already exists) - a directory whose files all
+                # fail validation/collide never touches dest_dir and
+                # shouldn't block a later, genuinely valid item from using it.
+                dest_used = False
                 # Same many-to-one sanitization risk as dest_dirs_this_pass above,
                 # but within a single item's own nested files: two different raw
                 # subfolder names or filenames (e.g. "CD:1" and "CD1") can sanitize
@@ -1212,6 +1218,7 @@ def _do_organize_bookshelf_staging(cfg):
                                         'collides with "%s" already claimed this pass (%s) - resolve manually',
                                         rel_dir, name, claimed_rel, dest_subdir)
                         skipped_any = True
+                        dirnames[:] = []  # don't descend into the collided subtree
                         continue
                     claimed_subdirs[dest_subdir] = rel_dir
                     for fname in sorted(filenames):
@@ -1234,10 +1241,13 @@ def _do_organize_bookshelf_staging(cfg):
                             continue
                         claimed_targets[dest_path] = claimed_source
                         os.makedirs(dest_subdir, exist_ok=True)
+                        dest_used = True
                         if _move_book_file(os.path.join(dirpath, fname), dest_path):
                             moved_any = True
                         else:
                             skipped_any = True
+                if dest_used:
+                    dest_dirs_this_pass[dest_dir] = name
                 if moved_any and not skipped_any:
                     # All book files moved — safe to remove staging folder and extras.
                     shutil.rmtree(src, ignore_errors=True)
