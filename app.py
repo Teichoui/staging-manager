@@ -953,18 +953,31 @@ def has_book(path):
     except OSError:
         return False
 
-def sanitize_path_component(name):
-    """Reject anything that could escape the intended destination directory
-    when building a path from user/torrent-supplied text (author, title), and
-    strip characters ZFS/Linux allow but Windows/SMB clients can't display.
-    A book title like "What Price Love?" is a perfectly valid ZFS folder
-    name, but Samba can't represent '?' (or <>:"|*, or a trailing dot/space)
-    to a Windows client and silently falls back to a mangled 8.3 alias
-    (e.g. "WFXKJU~F") instead - the folder is still there, just unreadable
-    from Windows/SMB. Stripping keeps the library browsable everywhere."""
+def validate_path_component(name):
+    """Reject anything that could escape the intended directory when looking
+    up a client-supplied staging item (a name/subfolder/file that must match
+    an existing on-disk entry exactly) - never mutates the value, since the
+    suggestions endpoint sends back the real on-disk name and apply has to
+    find that same path again. For a NEW path being created, see
+    sanitize_path_component instead."""
     name = name.strip()
     if not name or name in ('.', '..') or '/' in name or '\\' in name:
         raise ValueError(f'unsafe path component: {name!r}')
+    return name
+
+def sanitize_path_component(name):
+    """Like validate_path_component, but also strips characters ZFS/Linux
+    allow but Windows/SMB clients can't display. A book title like "What
+    Price Love?" is a perfectly valid ZFS folder name, but Samba can't
+    represent '?' (or <>:"|*, or a trailing dot/space) to a Windows client
+    and silently falls back to a mangled 8.3 alias (e.g. "WFXKJU~F") instead
+    - the folder is still there, just unreadable from Windows/SMB. Stripping
+    keeps the library browsable everywhere. Only use this for a destination
+    component being newly created (author/title, a book filename being
+    moved into the library) - never to look up an existing on-disk name,
+    which must match exactly and won't have had these characters removed
+    (see validate_path_component)."""
+    name = validate_path_component(name)
     original = name
     name = re.sub(r'[<>:"|?*]', '', name).rstrip('. ')
     if not name:
@@ -1089,6 +1102,15 @@ def _do_organize_bookshelf_staging(cfg):
     except OSError as e:
         logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
         return
+    # Sanitizing author/title is a many-to-one mapping (e.g. "A:B" and "AB"
+    # both become "AB"), so two distinct staging items can now land on the
+    # same dest_dir even though they didn't before this normalization was
+    # added. os.makedirs(..., exist_ok=True) doesn't care whether a dest_dir
+    # already existed from an earlier organize run (normal, expected) or was
+    # just claimed by a *different* item in this same pass (a real merge
+    # risk) - track the latter explicitly so two unrelated books can't get
+    # silently combined into one library folder.
+    dest_dirs_this_pass = {}
     for name in entries:
             src = os.path.join(staging_base, name)
             is_file = os.path.isfile(src)
@@ -1127,10 +1149,21 @@ def _do_organize_bookshelf_staging(cfg):
                 logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
                 continue
             dest_dir = os.path.join(dest_lib, author, title)
+            claimed_by = dest_dirs_this_pass.get(dest_dir)
+            if claimed_by is not None and claimed_by != name:
+                logger.warning('organize_bookshelf_staging: skipping "%s" - sanitized author/title collides with '
+                                '"%s" already organized this pass (%s) - resolve manually', name, claimed_by, dest_dir)
+                continue
+            dest_dirs_this_pass[dest_dir] = name
             try:
                 os.makedirs(dest_dir, exist_ok=True)
                 if is_file:
-                    moved = _move_book_file(src, os.path.join(dest_dir, name))
+                    try:
+                        dest_name = sanitize_path_component(name)
+                    except ValueError as e:
+                        logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
+                        continue
+                    moved = _move_book_file(src, os.path.join(dest_dir, dest_name))
                     if moved:
                         logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
                     continue
@@ -1153,9 +1186,15 @@ def _do_organize_bookshelf_staging(cfg):
                     for fname in filenames:
                         if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
                             continue
+                        try:
+                            dest_fname = sanitize_path_component(fname)
+                        except ValueError as e:
+                            logger.warning('organize_bookshelf_staging: skipping file "%s" in "%s": %s', fname, name, e)
+                            skipped_any = True
+                            continue
                         dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
                         os.makedirs(dest_subdir, exist_ok=True)
-                        if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname)):
+                        if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, dest_fname)):
                             moved_any = True
                         else:
                             skipped_any = True
@@ -1305,7 +1344,7 @@ def organize_apply():
     items = data.get('items', [])
     staging_base = cfg.get('staging_bookshelf', '')
     try:
-        name = sanitize_path_component(name)
+        name = validate_path_component(name)
     except ValueError:
         return jsonify({'error': 'Invalid name'}), 400
     src = os.path.join(staging_base, name)
@@ -1338,9 +1377,9 @@ def organize_apply():
                 author = sanitize_path_component(author)
                 title = sanitize_path_component(title)
                 if sub is not None:
-                    sub = sanitize_path_component(sub)
+                    sub = validate_path_component(sub)
                 if fname is not None:
-                    fname = sanitize_path_component(fname)
+                    fname = validate_path_component(fname)
             except ValueError as e:
                 return jsonify({'error': str(e)}), 400
             # A row is one of: a book subfolder, a single ebook file inside a
