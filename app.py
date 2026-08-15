@@ -1182,12 +1182,34 @@ def has_book(path):
     except OSError:
         return False
 
-def sanitize_path_component(name):
-    """Reject anything that could escape the intended destination directory
-    when building a path from user/torrent-supplied text (author, title)."""
-    name = name.strip()
+def validate_path_component(name):
+    """Reject anything that could escape the intended directory when looking
+    up a client-supplied staging item (a name/subfolder/file that must match
+    an existing on-disk entry exactly) - never mutates the value, since the
+    suggestions endpoint sends back the real on-disk name and apply has to
+    find that same path again. For a NEW path being created, see
+    sanitize_path_component instead."""
     if not name or name in ('.', '..') or '/' in name or '\\' in name:
         raise ValueError(f'unsafe path component: {name!r}')
+    return name
+
+def sanitize_path_component(name):
+    """Like validate_path_component, but also strips characters ZFS/Linux
+    allow but Windows/SMB clients can't display. A book title like "What
+    Price Love?" is a perfectly valid ZFS folder name, but Samba can't
+    represent '?' (or <>:"|*, or a trailing dot/space) to a Windows client
+    and silently falls back to a mangled 8.3 alias (e.g. "WFXKJU~F") instead
+    - the folder is still there, just unreadable from Windows/SMB. Stripping
+    keeps the library browsable everywhere. Only use this for a destination
+    component being newly created (author/title, a book filename being
+    moved into the library) - never to look up an existing on-disk name,
+    which must match exactly and won't have had these characters removed
+    (see validate_path_component)."""
+    name = validate_path_component(name)
+    original = name
+    name = re.sub(r'[<>:"|?*]', '', name).rstrip('. ')
+    if not name:
+        raise ValueError(f'name is empty after removing characters invalid on Windows/SMB: {original!r}')
     return name
 
 def parse_author_title(folder_name):
@@ -1304,10 +1326,22 @@ def _do_organize_bookshelf_staging(cfg):
     if not audiobooks_lib and not books_lib:
         return
     try:
-        entries = os.listdir(staging_base)
+        # Sorted so "first claimant wins" collision resolution below is
+        # reproducible across runs instead of depending on directory
+        # enumeration order (which os.listdir doesn't guarantee).
+        entries = sorted(os.listdir(staging_base))
     except OSError as e:
         logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
         return
+    # Sanitizing author/title is a many-to-one mapping (e.g. "A:B" and "AB"
+    # both become "AB"), so two distinct staging items can now land on the
+    # same dest_dir even though they didn't before this normalization was
+    # added. os.makedirs(..., exist_ok=True) doesn't care whether a dest_dir
+    # already existed from an earlier organize run (normal, expected) or was
+    # just claimed by a *different* item in this same pass (a real merge
+    # risk) - track the latter explicitly so two unrelated books can't get
+    # silently combined into one library folder.
+    dest_dirs_this_pass = {}
     for name in entries:
             src = os.path.join(staging_base, name)
             is_file = os.path.isfile(src)
@@ -1346,19 +1380,56 @@ def _do_organize_bookshelf_staging(cfg):
                 logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
                 continue
             dest_dir = os.path.join(dest_lib, author, title)
+            claimed_by = dest_dirs_this_pass.get(dest_dir)
+            if claimed_by is not None and claimed_by != name:
+                logger.warning('organize_bookshelf_staging: skipping "%s" - sanitized author/title collides with '
+                                '"%s" already organized this pass (%s) - resolve manually', name, claimed_by, dest_dir)
+                continue
+            if is_file:
+                # Validate the destination filename before claiming dest_dir -
+                # a claim registered here would never be released, permanently
+                # blocking a later item that legitimately wants this same
+                # sanitized author/title even though this one never moved.
+                try:
+                    dest_name = sanitize_path_component(name)
+                except ValueError as e:
+                    logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
+                    continue
+                dest_dirs_this_pass[dest_dir] = name
             try:
                 os.makedirs(dest_dir, exist_ok=True)
                 if is_file:
-                    moved = _move_book_file(src, os.path.join(dest_dir, name))
+                    moved = _move_book_file(src, os.path.join(dest_dir, dest_name))
                     if moved:
                         logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
                     continue
                 moved_any = False
                 skipped_any = False  # True if any dest already existed
+                # Only claim dest_dir once a nested file actually reaches
+                # _move_book_file (moved, or left in place because the
+                # destination already exists) - a directory whose files all
+                # fail validation/collide never touches dest_dir and
+                # shouldn't block a later, genuinely valid item from using it.
+                dest_used = False
+                # Same many-to-one sanitization risk as dest_dirs_this_pass above,
+                # but within a single item's own nested files: two different raw
+                # subfolder names or filenames (e.g. "CD:1" and "CD1") can sanitize
+                # to the same nested destination path. Track claimed final paths so
+                # a later raw source can't silently overwrite an earlier one's file.
+                claimed_targets = {}
+                # Two differently-named raw subfolders (e.g. "CD:1" and "CD1")
+                # can also sanitize to the same dest_subdir - claimed_targets
+                # alone only catches an exact full dest_path collision, so a
+                # merge of two source subfolders with different filenames
+                # inside would otherwise go unnoticed. Track claimed
+                # directories separately, keyed by the first rel_dir to use them.
+                claimed_subdirs = {}
                 # Walk recursively (matching has_book()'s own traversal) - multi-disc
                 # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
-                # top-level-only listing would miss them entirely.
-                for dirpath, _, filenames in os.walk(src):
+                # top-level-only listing would miss them entirely. Sorted so which
+                # subfolder "wins" a dest_subdir collision is reproducible.
+                for dirpath, dirnames, filenames in os.walk(src):
+                    dirnames.sort()
                     rel_dir = os.path.relpath(dirpath, src)
                     safe_rel = None
                     if rel_dir == '.':
@@ -1369,15 +1440,43 @@ def _do_organize_bookshelf_staging(cfg):
                         except ValueError:
                             logger.warning('organize_bookshelf_staging: skipping unsafe nested path "%s" in "%s"', rel_dir, name)
                             continue
-                    for fname in filenames:
+                    dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                    claimed_rel = claimed_subdirs.get(dest_subdir)
+                    if claimed_rel is not None and claimed_rel != rel_dir:
+                        logger.warning('organize_bookshelf_staging: skipping nested folder "%s" in "%s" - sanitized path '
+                                        'collides with "%s" already claimed this pass (%s) - resolve manually',
+                                        rel_dir, name, claimed_rel, dest_subdir)
+                        skipped_any = True
+                        dirnames[:] = []  # don't descend into the collided subtree
+                        continue
+                    claimed_subdirs[dest_subdir] = rel_dir
+                    for fname in sorted(filenames):
                         if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
                             continue
-                        dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                        try:
+                            dest_fname = sanitize_path_component(fname)
+                        except ValueError as e:
+                            logger.warning('organize_bookshelf_staging: skipping file "%s" in "%s": %s', fname, name, e)
+                            skipped_any = True
+                            continue
+                        dest_path = os.path.join(dest_subdir, dest_fname)
+                        claimed_source = (dirpath, fname)
+                        prior_source = claimed_targets.get(dest_path)
+                        if prior_source is not None and prior_source != claimed_source:
+                            logger.warning('organize_bookshelf_staging: skipping "%s" in "%s" - sanitized path collides '
+                                            'with "%s" already claimed this pass (%s) - resolve manually',
+                                            fname, rel_dir, prior_source[1], dest_path)
+                            skipped_any = True
+                            continue
+                        claimed_targets[dest_path] = claimed_source
                         os.makedirs(dest_subdir, exist_ok=True)
-                        if _move_book_file(os.path.join(dirpath, fname), os.path.join(dest_subdir, fname)):
+                        dest_used = True
+                        if _move_book_file(os.path.join(dirpath, fname), dest_path):
                             moved_any = True
                         else:
                             skipped_any = True
+                if dest_used:
+                    dest_dirs_this_pass[dest_dir] = name
                 if moved_any and not skipped_any:
                     # All book files moved — safe to remove staging folder and extras.
                     shutil.rmtree(src, ignore_errors=True)
@@ -1524,7 +1623,7 @@ def organize_apply():
     items = data.get('items', [])
     staging_base = cfg.get('staging_bookshelf', '')
     try:
-        name = sanitize_path_component(name)
+        name = validate_path_component(name)
     except ValueError:
         return jsonify({'error': 'Invalid name'}), 400
     src = os.path.join(staging_base, name)
@@ -1557,9 +1656,9 @@ def organize_apply():
                 author = sanitize_path_component(author)
                 title = sanitize_path_component(title)
                 if sub is not None:
-                    sub = sanitize_path_component(sub)
+                    sub = validate_path_component(sub)
                 if fname is not None:
-                    fname = sanitize_path_component(fname)
+                    fname = validate_path_component(fname)
             except ValueError as e:
                 return jsonify({'error': str(e)}), 400
             # A row is one of: a book subfolder, a single ebook file inside a
