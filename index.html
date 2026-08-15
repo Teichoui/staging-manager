@@ -775,7 +775,7 @@ async function syncFromSeedbox(name, btn) {
   const res=await postJson('/api/sync',{name,category:seedboxCat});
   if(handle401(res)) return;
   const data=await res.json();
-  if(data.success){toast(`✓ Synced to staging: ${name}`,'success');}
+  if(data.success){toast(`✓ Synced to staging: ${name}`,'success'); loadOrganizeSuggestions();}
   else{toast(`✗ ${data.error||data.stderr}`,'error');}
   btn.disabled=false; btn.textContent='⬇ sync';
 }
