@@ -1097,7 +1097,10 @@ def _do_organize_bookshelf_staging(cfg):
     if not audiobooks_lib and not books_lib:
         return
     try:
-        entries = os.listdir(staging_base)
+        # Sorted so "first claimant wins" collision resolution below is
+        # reproducible across runs instead of depending on directory
+        # enumeration order (which os.listdir doesn't guarantee).
+        entries = sorted(os.listdir(staging_base))
     except OSError as e:
         logger.warning('organize_bookshelf_staging: cannot list %s: %s', staging_base, e)
         return
@@ -1153,15 +1156,20 @@ def _do_organize_bookshelf_staging(cfg):
                 logger.warning('organize_bookshelf_staging: skipping "%s" - sanitized author/title collides with '
                                 '"%s" already organized this pass (%s) - resolve manually', name, claimed_by, dest_dir)
                 continue
+            if is_file:
+                # Validate the destination filename before claiming dest_dir -
+                # a claim registered here would never be released, permanently
+                # blocking a later item that legitimately wants this same
+                # sanitized author/title even though this one never moved.
+                try:
+                    dest_name = sanitize_path_component(name)
+                except ValueError as e:
+                    logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
+                    continue
             dest_dirs_this_pass[dest_dir] = name
             try:
                 os.makedirs(dest_dir, exist_ok=True)
                 if is_file:
-                    try:
-                        dest_name = sanitize_path_component(name)
-                    except ValueError as e:
-                        logger.warning('organize_bookshelf_staging: skipping "%s": %s', name, e)
-                        continue
                     moved = _move_book_file(src, os.path.join(dest_dir, dest_name))
                     if moved:
                         logger.info('organize_bookshelf_staging: moved "%s" -> %s', name, dest_dir)
@@ -1174,10 +1182,19 @@ def _do_organize_bookshelf_staging(cfg):
                 # to the same nested destination path. Track claimed final paths so
                 # a later raw source can't silently overwrite an earlier one's file.
                 claimed_targets = {}
+                # Two differently-named raw subfolders (e.g. "CD:1" and "CD1")
+                # can also sanitize to the same dest_subdir - claimed_targets
+                # alone only catches an exact full dest_path collision, so a
+                # merge of two source subfolders with different filenames
+                # inside would otherwise go unnoticed. Track claimed
+                # directories separately, keyed by the first rel_dir to use them.
+                claimed_subdirs = {}
                 # Walk recursively (matching has_book()'s own traversal) - multi-disc
                 # audiobooks commonly nest their audio files under CD1/CD2/etc, and a
-                # top-level-only listing would miss them entirely.
-                for dirpath, _, filenames in os.walk(src):
+                # top-level-only listing would miss them entirely. Sorted so which
+                # subfolder "wins" a dest_subdir collision is reproducible.
+                for dirpath, dirnames, filenames in os.walk(src):
+                    dirnames.sort()
                     rel_dir = os.path.relpath(dirpath, src)
                     safe_rel = None
                     if rel_dir == '.':
@@ -1188,7 +1205,16 @@ def _do_organize_bookshelf_staging(cfg):
                         except ValueError:
                             logger.warning('organize_bookshelf_staging: skipping unsafe nested path "%s" in "%s"', rel_dir, name)
                             continue
-                    for fname in filenames:
+                    dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
+                    claimed_rel = claimed_subdirs.get(dest_subdir)
+                    if claimed_rel is not None and claimed_rel != rel_dir:
+                        logger.warning('organize_bookshelf_staging: skipping nested folder "%s" in "%s" - sanitized path '
+                                        'collides with "%s" already claimed this pass (%s) - resolve manually',
+                                        rel_dir, name, claimed_rel, dest_subdir)
+                        skipped_any = True
+                        continue
+                    claimed_subdirs[dest_subdir] = rel_dir
+                    for fname in sorted(filenames):
                         if os.path.splitext(fname)[1].lower() not in BOOK_EXTENSIONS:
                             continue
                         try:
@@ -1197,7 +1223,6 @@ def _do_organize_bookshelf_staging(cfg):
                             logger.warning('organize_bookshelf_staging: skipping file "%s" in "%s": %s', fname, name, e)
                             skipped_any = True
                             continue
-                        dest_subdir = os.path.join(dest_dir, safe_rel) if safe_rel else dest_dir
                         dest_path = os.path.join(dest_subdir, dest_fname)
                         claimed_source = (dirpath, fname)
                         prior_source = claimed_targets.get(dest_path)
