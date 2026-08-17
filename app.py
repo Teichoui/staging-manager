@@ -1224,7 +1224,9 @@ def _delete_rar_volumes(dirpath, first_volume_name):
         pattern = re.compile(re.escape(m.group(1)) + r'\.part\d+\.rar$', re.IGNORECASE)
     else:
         prefix = first_volume_name[:-len('.rar')]
-        pattern = re.compile(re.escape(prefix) + r'\.(rar|r\d{2,3})$', re.IGNORECASE)
+        # Old-style numbering rolls past .r99 into .s00, .t00, ... for sets
+        # with more than 100 volumes, rather than continuing r100/r101.
+        pattern = re.compile(re.escape(prefix) + r'\.(rar|[a-z]\d{2,3})$', re.IGNORECASE)
     for fname in os.listdir(dirpath):
         if pattern.match(fname):
             try:
