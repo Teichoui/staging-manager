@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib, tempfile  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -1246,35 +1246,46 @@ def extract_rar_archives(root):
                 continue  # continuation volume of a new-style set
             rar_path = os.path.join(dirpath, fname)
             logger.info('extract_rar_archives: extracting %s', rar_path)
-            before = set(os.listdir(dirpath))
+            # Extract into an isolated temp dir (same filesystem as dirpath,
+            # so promoting the result is a cheap rename) rather than straight
+            # into dirpath. A failed/partial attempt (timeout, missing
+            # volume) would otherwise leave a stray file behind under
+            # dirpath whose name then poisons a later retry's "did this
+            # produce new output" check - a real subsequent success could be
+            # mistaken for a no-op failure since the filename already exists.
+            tmp_dir = tempfile.mkdtemp(prefix='.unrar-', dir=dirpath)
             try:
-                result = subprocess.run(
-                    ['unar', '-force-overwrite', '-no-directory', '-output-directory', dirpath, rar_path],
-                    capture_output=True, text=True, timeout=1800)  # nosec B603
-            except (subprocess.TimeoutExpired, OSError) as e:
-                # Leave the volumes in place and keep going - one bad archive
-                # (or a slow extraction that hits the timeout) shouldn't abort
-                # the whole sync cycle for every other torrent.
-                logger.warning('extract_rar_archives: failed to run unar on %s: %s', rar_path, e)
-                all_ok = False
-                continue
-            # unar's exit code can't be trusted on its own - confirmed it still
-            # returns 0 for "Couldn't recognize the archive format." on a
-            # bad/corrupt file. Require both a clean exit code AND at least
-            # one new regular file on disk before treating this as a success
-            # and deleting the source volumes - a false positive on either
-            # signal alone would risk deleting the only copy of the release,
-            # or (exit-code-only) accepting a partial/corrupt extraction.
-            new_files = {f for f in set(os.listdir(dirpath)) - before
-                         if os.path.isfile(os.path.join(dirpath, f))}
-            if result.returncode != 0 or not new_files:
-                logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, new_files=%s): %s',
-                                rar_path, result.returncode, bool(new_files),
-                                (result.stderr or result.stdout)[-500:])
-                all_ok = False
-                continue
-            logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(new_files)))
-            _delete_rar_volumes(dirpath, fname)
+                try:
+                    result = subprocess.run(
+                        ['unar', '-force-overwrite', '-no-directory', '-output-directory', tmp_dir, rar_path],
+                        capture_output=True, text=True, timeout=1800)  # nosec B603
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    # Leave the volumes in place and keep going - one bad archive
+                    # (or a slow extraction that hits the timeout) shouldn't abort
+                    # the whole sync cycle for every other torrent.
+                    logger.warning('extract_rar_archives: failed to run unar on %s: %s', rar_path, e)
+                    all_ok = False
+                    continue
+                # unar's exit code can't be trusted on its own - confirmed it
+                # still returns 0 for "Couldn't recognize the archive
+                # format." on a bad/corrupt file. Require both a clean exit
+                # code AND at least one regular file actually produced before
+                # promoting anything - a false positive on either signal
+                # alone would risk deleting the only copy of the release, or
+                # (exit-code-only) promoting a partial/corrupt extraction.
+                extracted = [f for f in os.listdir(tmp_dir) if os.path.isfile(os.path.join(tmp_dir, f))]
+                if result.returncode != 0 or not extracted:
+                    logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, files=%d): %s',
+                                    rar_path, result.returncode, len(extracted),
+                                    (result.stderr or result.stdout)[-500:])
+                    all_ok = False
+                    continue
+                for f in extracted:
+                    shutil.move(os.path.join(tmp_dir, f), os.path.join(dirpath, f))
+                logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(extracted)))
+                _delete_rar_volumes(dirpath, fname)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
     return all_ok
 
 def validate_path_component(name):
