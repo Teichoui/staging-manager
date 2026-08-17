@@ -792,6 +792,11 @@ def run_torrent_sync():
                             check_cmd, capture_output=True, text=True, timeout=300)
                         checked_ok = check.returncode == 0
                     if checked_ok:
+                        # The seedbox no longer unpacks releases itself - a
+                        # tv/movies release that arrived still rarred needs
+                        # extracting before has_video() can see the real files.
+                        if category in ('tv', 'movies') and os.path.isdir(local_path):
+                            extract_rar_archives(local_path)
                         is_complete = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
                         if is_complete:
                             import_attempts = 1 if category in ('tv', 'movies') else 0
@@ -1181,6 +1186,65 @@ def has_book(path):
         return False
     except OSError:
         return False
+
+# Video releases are split into either old-style volumes ("name.rar" +
+# "name.r00", "name.r01", ...) or new-style ("name.part1.rar",
+# "name.part2.rar", ...). Both forms glob-match "*.rar", but for the
+# new-style form every volume shares that suffix, so only the first volume
+# (part1/part01) should be handed to unar - it pulls in the rest of the set
+# on its own.
+_RAR_FIRST_VOLUME_RE = re.compile(r'^(.*)\.part0*1\.rar$', re.IGNORECASE)
+_RAR_OTHER_VOLUME_RE = re.compile(r'^(.*)\.part\d+\.rar$', re.IGNORECASE)
+
+def _delete_rar_volumes(dirpath, first_volume_name):
+    """Remove every archive volume belonging to the set first_volume_name was
+    just extracted from."""
+    m = _RAR_FIRST_VOLUME_RE.match(first_volume_name)
+    if m:
+        pattern = re.compile(re.escape(m.group(1)) + r'\.part\d+\.rar$', re.IGNORECASE)
+    else:
+        prefix = first_volume_name[:-len('.rar')]
+        pattern = re.compile(re.escape(prefix) + r'\.(rar|r\d{2,3})$', re.IGNORECASE)
+    for fname in os.listdir(dirpath):
+        if pattern.match(fname):
+            try:
+                os.remove(os.path.join(dirpath, fname))
+            except OSError as e:
+                logger.warning('extract_rar_archives: failed to remove volume %s: %s',
+                                os.path.join(dirpath, fname), e)
+
+def extract_rar_archives(root):
+    """Extract every RAR archive found under root (a staging item's folder)
+    in place with unar, then delete the consumed volumes - the seedbox no
+    longer unpacks releases itself, so a rar-only release lands here still
+    packed and needs extracting before has_video() can see the real files."""
+    if not shutil.which('unar'):
+        logger.warning('extract_rar_archives: unar not installed - leaving %s packed', root)
+        return
+    for dirpath, _, filenames in os.walk(root):
+        for fname in filenames:
+            if not fname.lower().endswith('.rar'):
+                continue
+            if _RAR_OTHER_VOLUME_RE.match(fname) and not _RAR_FIRST_VOLUME_RE.match(fname):
+                continue  # continuation volume of a new-style set
+            rar_path = os.path.join(dirpath, fname)
+            logger.info('extract_rar_archives: extracting %s', rar_path)
+            before = set(os.listdir(dirpath))
+            result = subprocess.run(
+                ['unar', '-force-overwrite', '-no-directory', '-output-directory', dirpath, rar_path],
+                capture_output=True, text=True, timeout=1800)  # nosec B603
+            # unar's exit code can't be trusted - confirmed it still returns 0
+            # for "Couldn't recognize the archive format." on a bad/corrupt
+            # file. Only treat it as a success (and only then delete the
+            # source volumes) if it actually produced new output, since a
+            # false positive here would delete the only copy of the release.
+            new_files = set(os.listdir(dirpath)) - before
+            if not new_files:
+                logger.warning('extract_rar_archives: no output produced for %s (rc=%s): %s',
+                                rar_path, result.returncode, (result.stderr or result.stdout)[-500:])
+                continue
+            logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(new_files)))
+            _delete_rar_volumes(dirpath, fname)
 
 def validate_path_component(name):
     """Reject anything that could escape the intended directory when looking
