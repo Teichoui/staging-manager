@@ -1881,6 +1881,16 @@ def sync_folder():
         return jsonify({'error': str(e)}), 400
     if not sync_lock.acquire(blocking=False):
         return jsonify({'error': 'A sync is already running'}), 429
+    # Also hold torrent_sync_lock for the whole operation, not just sync_lock -
+    # run_torrent_sync() only holds torrent_sync_lock while it copies,
+    # extracts, promotes, and deletes rar volumes for a scheduled item.
+    # Without this, a manual sync of the same release could run its own
+    # copy/extract/promote/delete concurrently with the scheduler, risking
+    # partial reads, conflicting promotion, or one side deleting volumes the
+    # other still needs.
+    if not torrent_sync_lock.acquire(blocking=False):
+        sync_lock.release()
+        return jsonify({'error': 'The scheduled torrent sync is running'}), 429
     remote = f"{remote_name}:{seedbox_path}/{name}"
     existing = f"{staging_base}/{name}"
     # A single-file item already on disk as a file (or, if missing entirely, a
@@ -1919,19 +1929,11 @@ def sync_folder():
                                     category, name)
                     return jsonify({'error': 'Copied but extraction failed - archive left in place for retry'}), 500
             if category == 'bookshelf':
-                # sync_lock is already held here, so call the inner function
-                # directly rather than going through organize_bookshelf_staging
-                # (which would try to acquire the lock and immediately defer).
-                # Also skip while the scheduled torrent sync holds its own lock
-                # and may still be copying into bookshelf staging - its own
-                # organize step at the end of the cycle covers this item.
-                if torrent_sync_lock.acquire(blocking=False):
-                    try:
-                        _do_organize_bookshelf_staging(cfg)
-                    finally:
-                        torrent_sync_lock.release()
-                else:
-                    logger.info('sync: organize deferred - torrent sync is running')
+                # sync_lock and torrent_sync_lock are both already held for
+                # this whole request, so call the inner function directly
+                # rather than going through organize_bookshelf_staging (which
+                # would try to acquire torrent_sync_lock itself and deadlock).
+                _do_organize_bookshelf_staging(cfg)
         else:
             logger.warning('sync failed category=%s name=%s stderr=%s', category, name, r.stderr.strip())
         return jsonify({'success': r.returncode==0, 'message': 'Sync finished' if r.returncode == 0 else 'Sync failed'})
@@ -1942,6 +1944,7 @@ def sync_folder():
         logger.exception('sync error category=%s name=%s', category, name)
         return public_error()
     finally:
+        torrent_sync_lock.release()
         sync_lock.release()
 
 @app.route('/api/delete', methods=['POST'])
