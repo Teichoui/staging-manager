@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib, tempfile  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib, tempfile, stat  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -1317,13 +1317,20 @@ def extract_rar_archives(root):
                 # wrapper folder - it doesn't flatten a folder that's part of
                 # the archive's own internal layout, so the check (and the
                 # promotion below) has to look inside subdirectories too.
-                # Require an actual video file, not just any regular file -
-                # this is tv/movies-only (extract_rar_archives is never
-                # called for bookshelf), so an archive that only yielded
-                # metadata (.nfo, .srt, ...) with no real video shouldn't be
-                # treated as a successful extraction.
+                # Require an actual regular video file, not just any regular
+                # file - this is tv/movies-only (extract_rar_archives is
+                # never called for bookshelf), so an archive that only
+                # yielded metadata (.nfo, .srt, ...) with no real video
+                # shouldn't be treated as a successful extraction. Must also
+                # be a real file, not a symlink: RAR (and unar) supports link
+                # entries, so a crafted/corrupt archive could contain a
+                # symlink named "episode.mkv" that satisfies the extension
+                # check without any real video content ever having been
+                # extracted - use os.lstat() (not os.stat(), which follows
+                # the link) so a symlink is correctly seen as non-regular.
                 has_output = any(
                     os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
+                    and stat.S_ISREG(os.lstat(os.path.join(dp, f)).st_mode)
                     for dp, _, fnames in os.walk(tmp_dir) for f in fnames)
                 if result.returncode != 0 or not has_output:
                     logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, has_output=%s): %s',
@@ -1346,7 +1353,14 @@ def extract_rar_archives(root):
                         dest_dir = dirpath if rel == '.' else os.path.join(dirpath, rel)
                         os.makedirs(dest_dir, exist_ok=True)
                         for tf in tfilenames:
-                            shutil.move(os.path.join(tdirpath, tf), os.path.join(dest_dir, tf))
+                            src_path = os.path.join(tdirpath, tf)
+                            # Never promote a symlink (or any other
+                            # non-regular entry) into the library - same
+                            # reasoning as the has_output check above.
+                            if not stat.S_ISREG(os.lstat(src_path).st_mode):
+                                logger.warning('extract_rar_archives: skipping non-regular extracted entry %s', src_path)
+                                continue
+                            shutil.move(src_path, os.path.join(dest_dir, tf))
                             extracted.append(tf if rel == '.' else os.path.join(rel, tf))
                 except OSError as e:
                     # A permissions/disk-full/filesystem error partway through
