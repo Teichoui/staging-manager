@@ -61,7 +61,7 @@ It is meant to replace the quick SSH chores from the media setup:
 - TrueNAS API URL: `http://host.docker.internal`
 - TrueNAS ACL paths: `/mnt/tank/Media/TV`, `/mnt/tank/Media/Movies`, `/mnt/tank/Media/staging`
 - TrueNAS Apps UID/GID: `568` / `568`
-- rclone excludes: `**/*.rar`, `**/*.r[0-9][0-9]`
+- rclone excludes: none by default (e.g. `**/*.iso`, `**/*.sample.*` if you want to add your own). Don't add RAR patterns (`**/*.rar`, `**/*.r[0-9][0-9]`) here - tv/movies releases are extracted locally on the R720xd after sync, so excluding RAR volumes just stops the extractor from ever seeing them.
 - TLS certificate verification for Sonarr/Radarr/TrueNAS API calls is on by default. Disable it in Settings only for self-signed HTTPS endpoints on trusted networks.
 - Service URLs are restricted to local/private addresses and `STAGING_MANAGER_ALLOWED_HOSTS`.
 - Staging delete/sync paths must stay under `STAGING_MANAGER_CONTAINER_STAGING_ROOT` (`/media/staging` by default).
@@ -79,7 +79,7 @@ Open the app and create the admin account on `/setup`. Enter the setup token fro
 - Radarr API key
 - TrueNAS API key
 - rclone remote name and seedbox paths
-- rclone excludes and transfer count if you want to change the default RAR skip behavior
+- rclone excludes and transfer count if you want to skip other file types (e.g. `**/*.iso`) - leave RAR patterns out, they're extracted locally instead of skipped
 - Apps UID/GID if your TrueNAS app user differs from `568`
 
 The app stores these values in `/config/config.json`, which is kept outside the image.

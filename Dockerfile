@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RCLONE_CONFIG=/config/rclone/rclone.conf
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl rclone ca-certificates \
+    && apt-get install -y --no-install-recommends openssl rclone ca-certificates unar \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

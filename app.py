@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib  # nosec B404
+import os, json, subprocess, shutil, secrets, time, bcrypt, ssl, re, logging, ipaddress, threading, posixpath, sqlite3, xmlrpc.client, fnmatch, zipfile, contextlib, tempfile, stat  # nosec B404
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, send_from_directory, session, redirect
@@ -113,7 +113,7 @@ DEFAULT_CONFIG = {
     "tv_label": "sonarr",
     "movies_label": "radarr",
     "bookshelf_label": "readarr",
-    "rclone_excludes": ["*.rar", "*.r[0-9][0-9]"],
+    "rclone_excludes": [],
     "ignore_torrents": [],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
@@ -139,6 +139,7 @@ DEFAULT_CONFIG = {
     "rtorrent_user": "",
     "rtorrent_password": "",
     "sync_interval": 5,
+    "rar_excludes_migrated": False,
 }
 
 INT_CONFIG_FIELDS = {
@@ -152,7 +153,7 @@ INT_CONFIG_FIELDS = {
     "ultracc_ssh_port": (22, 1, 65535),
 }
 
-BOOL_CONFIG_FIELDS = {"verify_tls"}
+BOOL_CONFIG_FIELDS = {"verify_tls", "rar_excludes_migrated"}
 SENSITIVE_CONFIG_FIELDS = {"sonarr_api_key", "radarr_api_key", "truenas_api_key", "cf_access_client_secret", "rtorrent_password", "ultracc_ssh_password"}
 SECRET_MASK = "__STAGING_MANAGER_SECRET_SET__"  # nosec B105
 
@@ -305,6 +306,18 @@ def load_config():
         data['rclone_excludes'] = [x.strip() for x in data['rclone_excludes'].splitlines() if x.strip()]
     if not isinstance(data.get('rclone_excludes'), list):
         data['rclone_excludes'] = DEFAULT_CONFIG['rclone_excludes']
+    # One-time migration: a stored config whose rclone_excludes still exactly
+    # matches the pre-extraction default was never customized by the user -
+    # update it once so an existing install doesn't keep silently filtering
+    # out the archives extract_rar_archives() is now supposed to handle.
+    # Gated on a persisted flag rather than a bare equality check, so that if
+    # the user later deliberately sets rclone_excludes back to those same two
+    # patterns, it's respected instead of being silently reverted every load.
+    if not data.get('rar_excludes_migrated'):
+        if data.get('rclone_excludes') == ['*.rar', '*.r[0-9][0-9]']:
+            data['rclone_excludes'] = []
+        data['rar_excludes_migrated'] = True
+        save_config(data)
     return data
 
 def save_config(data):
@@ -752,8 +765,15 @@ def run_torrent_sync():
                 # rclone can't apply --exclude filters to a copyto, so honor the
                 # configured skip rules ourselves: a single file that itself matches
                 # an exclude pattern (e.g. a lone .rar) should never be transferred.
-                if not is_multi_file and name_matches_excludes(t['name'], cfg.get('rclone_excludes', [])):
-                    logger.info('torrent sync: skipping excluded single file: %s', t['name'])
+                # A standalone single-file RAR (no wrapping directory) is also always
+                # skipped, regardless of rclone_excludes - extract_rar_archives() only
+                # handles archives found inside a multi-file torrent's own directory,
+                # so copying a lone .rar here would just re-copy the same dead file
+                # every cycle forever (has_video() can never see a real video in it).
+                if not is_multi_file and (
+                        name_matches_excludes(t['name'], cfg.get('rclone_excludes', []))
+                        or re.search(r'\.(rar|r\d{2,3})$', t['name'], re.IGNORECASE)):
+                    logger.info('torrent sync: skipping excluded/unsupported single file: %s', t['name'])
                     continue
                 copy_verb = 'copy' if is_multi_file else 'copyto'
                 cmd = [RCLONE_BIN, copy_verb, sftp_src, local_path,
@@ -792,7 +812,18 @@ def run_torrent_sync():
                             check_cmd, capture_output=True, text=True, timeout=300)
                         checked_ok = check.returncode == 0
                     if checked_ok:
-                        is_complete = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
+                        # The seedbox no longer unpacks releases itself - a
+                        # tv/movies release that arrived still rarred needs
+                        # extracting before has_video() can see the real files.
+                        # Gate completeness on extraction actually succeeding -
+                        # otherwise a still-packed release with a stray sample
+                        # video sitting next to the failed archive could get
+                        # marked synced/imported on that sample alone.
+                        extraction_ok = True
+                        if category in ('tv', 'movies') and os.path.isdir(local_path):
+                            extraction_ok = extract_rar_archives(local_path)
+                        is_complete = extraction_ok and (
+                            has_book(local_path) if category == 'bookshelf' else has_video(local_path))
                         if is_complete:
                             import_attempts = 1 if category in ('tv', 'movies') else 0
                             import_last_attempt = (
@@ -1181,6 +1212,173 @@ def has_book(path):
         return False
     except OSError:
         return False
+
+# Video releases are split into either old-style volumes ("name.rar" +
+# "name.r00", "name.r01", ...) or new-style ("name.part1.rar",
+# "name.part2.rar", ...). Both forms glob-match "*.rar", but for the
+# new-style form every volume shares that suffix, so only the first volume
+# (part1/part01) should be handed to unar - it pulls in the rest of the set
+# on its own.
+_RAR_FIRST_VOLUME_RE = re.compile(r'^(.*)\.part0*1\.rar$', re.IGNORECASE)
+_RAR_OTHER_VOLUME_RE = re.compile(r'^(.*)\.part\d+\.rar$', re.IGNORECASE)
+
+def _delete_rar_volumes(dirpath, first_volume_name):
+    """Remove every archive volume belonging to the set first_volume_name was
+    just extracted from."""
+    m = _RAR_FIRST_VOLUME_RE.match(first_volume_name)
+    if m:
+        pattern = re.compile(re.escape(m.group(1)) + r'\.part\d+\.rar$', re.IGNORECASE)
+    else:
+        prefix = first_volume_name[:-len('.rar')]
+        # Old-style numbering technically rolls past .r99 into .s00, .t00,
+        # ... for sets with more than 100 volumes, but ".s00"/".t00"-shaped
+        # extensions are structurally indistinguishable from a real codec/
+        # quality tag (".x264", ".h265", ".a01") with no way to tell them
+        # apart from the filename alone - matching that broadly risks
+        # deleting an unrelated real file, which is worse than leaving a
+        # few stray volumes behind for an edge case (>100 old-style
+        # volumes) that essentially never occurs for actual video releases.
+        pattern = re.compile(re.escape(prefix) + r'\.(rar|r\d{2,3})$', re.IGNORECASE)
+    for fname in os.listdir(dirpath):
+        if pattern.match(fname):
+            try:
+                os.remove(os.path.join(dirpath, fname))
+            except OSError as e:
+                logger.warning('extract_rar_archives: failed to remove volume %s: %s',
+                                os.path.join(dirpath, fname), e)
+
+def extract_rar_archives(root):
+    """Extract every RAR archive found under root (a staging item's folder)
+    in place with unar, then delete the consumed volumes - the seedbox no
+    longer unpacks releases itself, so a rar-only release lands here still
+    packed and needs extracting before has_video() can see the real files.
+    Returns False if any archive found wasn't cleanly extracted, so the
+    caller can hold off treating the item as complete rather than risk
+    importing a stray sample video sitting next to a still-packed release."""
+    unar_bin = shutil.which('unar')
+    if not unar_bin:
+        logger.warning('extract_rar_archives: unar not installed - leaving %s packed', root)
+        return False
+    # Scratch space for extraction lives under the shared staging root, not
+    # nested inside root (a transferred release's own directory) and not as
+    # a sibling of it either - a sibling would still show up as a bogus
+    # entry in scan_staging()'s listing of staging_tv/staging_movies (it has
+    # no dotfile filtering). CONTAINER_STAGING_ROOT is a fixed, dedicated
+    # location one level above every category's staging dir: never walked
+    # by any staging listing, but still the same filesystem/mount for a
+    # cheap rename when promoting into dirpath.
+    scratch_base = os.path.join(CONTAINER_STAGING_ROOT, '.staging-manager-unrar-tmp')
+    os.makedirs(scratch_base, exist_ok=True)
+    # Clean up anything left behind by a run that was interrupted before its
+    # own finally block could remove it (e.g. the container restarted
+    # mid-extraction). Scoped strictly to scratch_base, which only
+    # staging-manager itself ever writes to - never touches root.
+    for entry in os.listdir(scratch_base):
+        shutil.rmtree(os.path.join(scratch_base, entry), ignore_errors=True)
+    all_ok = True
+    for dirpath, _, filenames in os.walk(root):
+        for fname in filenames:
+            if not fname.lower().endswith('.rar'):
+                continue
+            if _RAR_OTHER_VOLUME_RE.match(fname) and not _RAR_FIRST_VOLUME_RE.match(fname):
+                continue  # continuation volume of a new-style set
+            rar_path = os.path.join(dirpath, fname)
+            logger.info('extract_rar_archives: extracting %s', rar_path)
+            # Extract into an isolated temp dir under scratch_base (same
+            # filesystem as dirpath, so promoting the result is a cheap
+            # rename) rather than straight into dirpath. A failed/partial
+            # attempt (timeout, missing volume) would otherwise leave a
+            # stray file behind under dirpath whose name then poisons a
+            # later retry's "did this produce new output" check - a real
+            # subsequent success could be mistaken for a no-op failure since
+            # the filename already exists.
+            tmp_dir = tempfile.mkdtemp(prefix='unrar-', dir=scratch_base)
+            try:
+                try:
+                    result = subprocess.run(
+                        [unar_bin, '-force-overwrite', '-no-directory', '-output-directory', tmp_dir, rar_path],
+                        capture_output=True, text=True, timeout=1800,
+                        stdin=subprocess.DEVNULL)  # nosec B603
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    # Leave the volumes in place and keep going - one bad archive
+                    # (or a slow extraction that hits the timeout) shouldn't abort
+                    # the whole sync cycle for every other torrent.
+                    logger.warning('extract_rar_archives: failed to run unar on %s: %s', rar_path, e)
+                    all_ok = False
+                    continue
+                # unar's exit code can't be trusted on its own - confirmed it
+                # still returns 0 for "Couldn't recognize the archive
+                # format." on a bad/corrupt file. Require both a clean exit
+                # code AND at least one regular file actually produced before
+                # promoting anything - a false positive on either signal
+                # alone would risk deleting the only copy of the release, or
+                # (exit-code-only) promoting a partial/corrupt extraction.
+                # -no-directory only suppresses unar's own synthesized
+                # wrapper folder - it doesn't flatten a folder that's part of
+                # the archive's own internal layout, so the check (and the
+                # promotion below) has to look inside subdirectories too.
+                # Require an actual regular video file, not just any regular
+                # file - this is tv/movies-only (extract_rar_archives is
+                # never called for bookshelf), so an archive that only
+                # yielded metadata (.nfo, .srt, ...) with no real video
+                # shouldn't be treated as a successful extraction. Must also
+                # be a real file, not a symlink: RAR (and unar) supports link
+                # entries, so a crafted/corrupt archive could contain a
+                # symlink named "episode.mkv" that satisfies the extension
+                # check without any real video content ever having been
+                # extracted - use os.lstat() (not os.stat(), which follows
+                # the link) so a symlink is correctly seen as non-regular.
+                has_output = any(
+                    os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
+                    and stat.S_ISREG(os.lstat(os.path.join(dp, f)).st_mode)
+                    for dp, _, fnames in os.walk(tmp_dir) for f in fnames)
+                if result.returncode != 0 or not has_output:
+                    logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, has_output=%s): %s',
+                                    rar_path, result.returncode, has_output,
+                                    (result.stderr or result.stdout)[-500:])
+                    all_ok = False
+                    continue
+                # Move file-by-file (creating the matching relative subdirs
+                # under dirpath as needed) instead of moving each top-level
+                # tmp_dir entry wholesale - shutil.move() nests a source
+                # directory *inside* an already-existing same-named
+                # destination directory rather than merging into it, which
+                # would silently double the nesting (dirpath/Season 1/Season
+                # 1/episode.mkv) for a release directory that already has a
+                # same-named subfolder from a prior partial extraction.
+                extracted = []
+                try:
+                    for tdirpath, _, tfilenames in os.walk(tmp_dir):
+                        rel = os.path.relpath(tdirpath, tmp_dir)
+                        dest_dir = dirpath if rel == '.' else os.path.join(dirpath, rel)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        for tf in tfilenames:
+                            src_path = os.path.join(tdirpath, tf)
+                            # Never promote a symlink (or any other
+                            # non-regular entry) into the library - same
+                            # reasoning as the has_output check above.
+                            if not stat.S_ISREG(os.lstat(src_path).st_mode):
+                                logger.warning('extract_rar_archives: skipping non-regular extracted entry %s', src_path)
+                                continue
+                            shutil.move(src_path, os.path.join(dest_dir, tf))
+                            extracted.append(tf if rel == '.' else os.path.join(rel, tf))
+                except OSError as e:
+                    # A permissions/disk-full/filesystem error partway through
+                    # promotion shouldn't propagate out of here - that would
+                    # abort run_torrent_sync's per-torrent loop and stop every
+                    # later torrent in this cycle from being processed, not
+                    # just this one. Leave the rar volumes in place (whatever
+                    # was already moved stays moved - _delete_rar_volumes only
+                    # touches the source .rar/.rNN files) and retry next cycle.
+                    logger.warning('extract_rar_archives: failed to promote extracted files for %s: %s',
+                                    rar_path, e)
+                    all_ok = False
+                    continue
+                logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(extracted)))
+                _delete_rar_volumes(dirpath, fname)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+    return all_ok
 
 def validate_path_component(name):
     """Reject anything that could escape the intended directory when looking
@@ -1727,6 +1925,16 @@ def sync_folder():
         return jsonify({'error': str(e)}), 400
     if not sync_lock.acquire(blocking=False):
         return jsonify({'error': 'A sync is already running'}), 429
+    # Also hold torrent_sync_lock for the whole operation, not just sync_lock -
+    # run_torrent_sync() only holds torrent_sync_lock while it copies,
+    # extracts, promotes, and deletes rar volumes for a scheduled item.
+    # Without this, a manual sync of the same release could run its own
+    # copy/extract/promote/delete concurrently with the scheduler, risking
+    # partial reads, conflicting promotion, or one side deleting volumes the
+    # other still needs.
+    if not torrent_sync_lock.acquire(blocking=False):
+        sync_lock.release()
+        return jsonify({'error': 'The scheduled torrent sync is running'}), 429
     remote = f"{remote_name}:{seedbox_path}/{name}"
     existing = f"{staging_base}/{name}"
     # A single-file item already on disk as a file (or, if missing entirely, a
@@ -1751,20 +1959,26 @@ def sync_folder():
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # nosec B603
         if r.returncode == 0:
             logger.info('sync success category=%s name=%s', category, name)
+            # This manual sync path bypasses run_torrent_sync entirely, so it
+            # needs its own extraction step - otherwise a manually-recovered
+            # rar-only tv/movies release gets reported "Synced" while still
+            # packed, and stays that way unless the scheduled sync happens to
+            # pick up the same item later. Volumes are left in place on
+            # failure (extract_rar_archives never deletes them unless
+            # extraction actually succeeded), so a retry just re-syncs and
+            # tries again.
+            if category in ('tv', 'movies') and os.path.isdir(existing):
+                if not extract_rar_archives(existing):
+                    logger.warning('sync: extraction failed category=%s name=%s - archive left for retry',
+                                    category, name)
+                    return jsonify({'error': 'Copied but extraction failed - archive left in place for retry'}), 500
             if category == 'bookshelf':
                 # sync_lock is already held here, so call the inner function
-                # directly rather than going through organize_bookshelf_staging
-                # (which would try to acquire the lock and immediately defer).
-                # Also skip while the scheduled torrent sync holds its own lock
-                # and may still be copying into bookshelf staging - its own
-                # organize step at the end of the cycle covers this item.
-                if torrent_sync_lock.acquire(blocking=False):
-                    try:
-                        _do_organize_bookshelf_staging(cfg)
-                    finally:
-                        torrent_sync_lock.release()
-                else:
-                    logger.info('sync: organize deferred - torrent sync is running')
+                # directly rather than going through organize_bookshelf_staging -
+                # that wrapper does its own non-blocking sync_lock.acquire()
+                # and would just fail to get it (already held by this request)
+                # and silently skip the organize step, not deadlock.
+                _do_organize_bookshelf_staging(cfg)
         else:
             logger.warning('sync failed category=%s name=%s stderr=%s', category, name, r.stderr.strip())
         return jsonify({'success': r.returncode==0, 'message': 'Sync finished' if r.returncode == 0 else 'Sync failed'})
@@ -1775,6 +1989,7 @@ def sync_folder():
         logger.exception('sync error category=%s name=%s', category, name)
         return public_error()
     finally:
+        torrent_sync_lock.release()
         sync_lock.release()
 
 @app.route('/api/delete', methods=['POST'])
