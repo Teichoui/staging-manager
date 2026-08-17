@@ -139,6 +139,7 @@ DEFAULT_CONFIG = {
     "rtorrent_user": "",
     "rtorrent_password": "",
     "sync_interval": 5,
+    "rar_excludes_migrated": False,
 }
 
 INT_CONFIG_FIELDS = {
@@ -152,7 +153,7 @@ INT_CONFIG_FIELDS = {
     "ultracc_ssh_port": (22, 1, 65535),
 }
 
-BOOL_CONFIG_FIELDS = {"verify_tls"}
+BOOL_CONFIG_FIELDS = {"verify_tls", "rar_excludes_migrated"}
 SENSITIVE_CONFIG_FIELDS = {"sonarr_api_key", "radarr_api_key", "truenas_api_key", "cf_access_client_secret", "rtorrent_password", "ultracc_ssh_password"}
 SECRET_MASK = "__STAGING_MANAGER_SECRET_SET__"  # nosec B105
 
@@ -307,11 +308,16 @@ def load_config():
         data['rclone_excludes'] = DEFAULT_CONFIG['rclone_excludes']
     # One-time migration: a stored config whose rclone_excludes still exactly
     # matches the pre-extraction default was never customized by the user -
-    # update it so an existing install doesn't keep silently filtering out
-    # the archives extract_rar_archives() is now supposed to handle. A config
-    # that differs at all (extra patterns, one removed) is left alone.
-    if data.get('rclone_excludes') == ['*.rar', '*.r[0-9][0-9]']:
-        data['rclone_excludes'] = []
+    # update it once so an existing install doesn't keep silently filtering
+    # out the archives extract_rar_archives() is now supposed to handle.
+    # Gated on a persisted flag rather than a bare equality check, so that if
+    # the user later deliberately sets rclone_excludes back to those same two
+    # patterns, it's respected instead of being silently reverted every load.
+    if not data.get('rar_excludes_migrated'):
+        if data.get('rclone_excludes') == ['*.rar', '*.r[0-9][0-9]']:
+            data['rclone_excludes'] = []
+        data['rar_excludes_migrated'] = True
+        save_config(data)
     return data
 
 def save_config(data):
@@ -1249,9 +1255,21 @@ def extract_rar_archives(root):
     Returns False if any archive found wasn't cleanly extracted, so the
     caller can hold off treating the item as complete rather than risk
     importing a stray sample video sitting next to a still-packed release."""
-    if not shutil.which('unar'):
+    unar_bin = shutil.which('unar')
+    if not unar_bin:
         logger.warning('extract_rar_archives: unar not installed - leaving %s packed', root)
         return False
+    # Clean up any stale .unrar-* temp dirs left behind by a run that was
+    # interrupted before its own finally block could remove them (e.g. the
+    # container restarted mid-extraction). A partial video file abandoned
+    # there would otherwise sit directly under a staging item's directory
+    # and get picked up by the caller's has_video() check, mistaken for a
+    # real completed release.
+    for dirpath, dirnames, _ in os.walk(root):
+        for d in list(dirnames):
+            if d.startswith('.unrar-'):
+                shutil.rmtree(os.path.join(dirpath, d), ignore_errors=True)
+                dirnames.remove(d)
     all_ok = True
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
@@ -1272,8 +1290,9 @@ def extract_rar_archives(root):
             try:
                 try:
                     result = subprocess.run(
-                        ['unar', '-force-overwrite', '-no-directory', '-output-directory', tmp_dir, rar_path],
-                        capture_output=True, text=True, timeout=1800)  # nosec B603
+                        [unar_bin, '-force-overwrite', '-no-directory', '-output-directory', tmp_dir, rar_path],
+                        capture_output=True, text=True, timeout=1800,
+                        stdin=subprocess.DEVNULL)  # nosec B603
                 except (subprocess.TimeoutExpired, OSError) as e:
                     # Leave the volumes in place and keep going - one bad archive
                     # (or a slow extraction that hits the timeout) shouldn't abort
@@ -1929,10 +1948,11 @@ def sync_folder():
                                     category, name)
                     return jsonify({'error': 'Copied but extraction failed - archive left in place for retry'}), 500
             if category == 'bookshelf':
-                # sync_lock and torrent_sync_lock are both already held for
-                # this whole request, so call the inner function directly
-                # rather than going through organize_bookshelf_staging (which
-                # would try to acquire torrent_sync_lock itself and deadlock).
+                # sync_lock is already held here, so call the inner function
+                # directly rather than going through organize_bookshelf_staging -
+                # that wrapper does its own non-blocking sync_lock.acquire()
+                # and would just fail to get it (already held by this request)
+                # and silently skip the organize step, not deadlock.
                 _do_organize_bookshelf_staging(cfg)
         else:
             logger.warning('sync failed category=%s name=%s stderr=%s', category, name, r.stderr.strip())
