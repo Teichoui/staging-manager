@@ -1259,17 +1259,22 @@ def extract_rar_archives(root):
     if not unar_bin:
         logger.warning('extract_rar_archives: unar not installed - leaving %s packed', root)
         return False
-    # Clean up any stale .unrar-* temp dirs left behind by a run that was
-    # interrupted before its own finally block could remove them (e.g. the
-    # container restarted mid-extraction). A partial video file abandoned
-    # there would otherwise sit directly under a staging item's directory
-    # and get picked up by the caller's has_video() check, mistaken for a
-    # real completed release.
-    for dirpath, dirnames, _ in os.walk(root):
-        for d in list(dirnames):
-            if d.startswith('.unrar-'):
-                shutil.rmtree(os.path.join(dirpath, d), ignore_errors=True)
-                dirnames.remove(d)
+    # Scratch space for extraction lives under the shared staging root, not
+    # nested inside root (a transferred release's own directory) and not as
+    # a sibling of it either - a sibling would still show up as a bogus
+    # entry in scan_staging()'s listing of staging_tv/staging_movies (it has
+    # no dotfile filtering). CONTAINER_STAGING_ROOT is a fixed, dedicated
+    # location one level above every category's staging dir: never walked
+    # by any staging listing, but still the same filesystem/mount for a
+    # cheap rename when promoting into dirpath.
+    scratch_base = os.path.join(CONTAINER_STAGING_ROOT, '.staging-manager-unrar-tmp')
+    os.makedirs(scratch_base, exist_ok=True)
+    # Clean up anything left behind by a run that was interrupted before its
+    # own finally block could remove it (e.g. the container restarted
+    # mid-extraction). Scoped strictly to scratch_base, which only
+    # staging-manager itself ever writes to - never touches root.
+    for entry in os.listdir(scratch_base):
+        shutil.rmtree(os.path.join(scratch_base, entry), ignore_errors=True)
     all_ok = True
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
@@ -1279,14 +1284,15 @@ def extract_rar_archives(root):
                 continue  # continuation volume of a new-style set
             rar_path = os.path.join(dirpath, fname)
             logger.info('extract_rar_archives: extracting %s', rar_path)
-            # Extract into an isolated temp dir (same filesystem as dirpath,
-            # so promoting the result is a cheap rename) rather than straight
-            # into dirpath. A failed/partial attempt (timeout, missing
-            # volume) would otherwise leave a stray file behind under
-            # dirpath whose name then poisons a later retry's "did this
-            # produce new output" check - a real subsequent success could be
-            # mistaken for a no-op failure since the filename already exists.
-            tmp_dir = tempfile.mkdtemp(prefix='.unrar-', dir=dirpath)
+            # Extract into an isolated temp dir under scratch_base (same
+            # filesystem as dirpath, so promoting the result is a cheap
+            # rename) rather than straight into dirpath. A failed/partial
+            # attempt (timeout, missing volume) would otherwise leave a
+            # stray file behind under dirpath whose name then poisons a
+            # later retry's "did this produce new output" check - a real
+            # subsequent success could be mistaken for a no-op failure since
+            # the filename already exists.
+            tmp_dir = tempfile.mkdtemp(prefix='unrar-', dir=scratch_base)
             try:
                 try:
                     result = subprocess.run(
@@ -1311,8 +1317,13 @@ def extract_rar_archives(root):
                 # wrapper folder - it doesn't flatten a folder that's part of
                 # the archive's own internal layout, so the check (and the
                 # promotion below) has to look inside subdirectories too.
+                # Require an actual video file, not just any regular file -
+                # this is tv/movies-only (extract_rar_archives is never
+                # called for bookshelf), so an archive that only yielded
+                # metadata (.nfo, .srt, ...) with no real video shouldn't be
+                # treated as a successful extraction.
                 has_output = any(
-                    os.path.isfile(os.path.join(dp, f))
+                    os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS
                     for dp, _, fnames in os.walk(tmp_dir) for f in fnames)
                 if result.returncode != 0 or not has_output:
                     logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, has_output=%s): %s',
