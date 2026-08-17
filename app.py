@@ -1905,6 +1905,19 @@ def sync_folder():
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # nosec B603
         if r.returncode == 0:
             logger.info('sync success category=%s name=%s', category, name)
+            # This manual sync path bypasses run_torrent_sync entirely, so it
+            # needs its own extraction step - otherwise a manually-recovered
+            # rar-only tv/movies release gets reported "Synced" while still
+            # packed, and stays that way unless the scheduled sync happens to
+            # pick up the same item later. Volumes are left in place on
+            # failure (extract_rar_archives never deletes them unless
+            # extraction actually succeeded), so a retry just re-syncs and
+            # tries again.
+            if category in ('tv', 'movies') and os.path.isdir(existing):
+                if not extract_rar_archives(existing):
+                    logger.warning('sync: extraction failed category=%s name=%s - archive left for retry',
+                                    category, name)
+                    return jsonify({'error': 'Copied but extraction failed - archive left in place for retry'}), 500
             if category == 'bookshelf':
                 # sync_lock is already held here, so call the inner function
                 # directly rather than going through organize_bookshelf_staging
