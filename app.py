@@ -305,6 +305,13 @@ def load_config():
         data['rclone_excludes'] = [x.strip() for x in data['rclone_excludes'].splitlines() if x.strip()]
     if not isinstance(data.get('rclone_excludes'), list):
         data['rclone_excludes'] = DEFAULT_CONFIG['rclone_excludes']
+    # One-time migration: a stored config whose rclone_excludes still exactly
+    # matches the pre-extraction default was never customized by the user -
+    # update it so an existing install doesn't keep silently filtering out
+    # the archives extract_rar_archives() is now supposed to handle. A config
+    # that differs at all (extra patterns, one removed) is left alone.
+    if data.get('rclone_excludes') == ['*.rar', '*.r[0-9][0-9]']:
+        data['rclone_excludes'] = []
     return data
 
 def save_config(data):
@@ -1273,15 +1280,22 @@ def extract_rar_archives(root):
                 # promoting anything - a false positive on either signal
                 # alone would risk deleting the only copy of the release, or
                 # (exit-code-only) promoting a partial/corrupt extraction.
-                extracted = [f for f in os.listdir(tmp_dir) if os.path.isfile(os.path.join(tmp_dir, f))]
-                if result.returncode != 0 or not extracted:
-                    logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, files=%d): %s',
-                                    rar_path, result.returncode, len(extracted),
+                # -no-directory only suppresses unar's own synthesized
+                # wrapper folder - it doesn't flatten a folder that's part of
+                # the archive's own internal layout, so the check (and the
+                # promotion below) has to look inside subdirectories too.
+                has_output = any(
+                    os.path.isfile(os.path.join(dp, f))
+                    for dp, _, fnames in os.walk(tmp_dir) for f in fnames)
+                if result.returncode != 0 or not has_output:
+                    logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, has_output=%s): %s',
+                                    rar_path, result.returncode, has_output,
                                     (result.stderr or result.stdout)[-500:])
                     all_ok = False
                     continue
-                for f in extracted:
-                    shutil.move(os.path.join(tmp_dir, f), os.path.join(dirpath, f))
+                extracted = os.listdir(tmp_dir)
+                for entry in extracted:
+                    shutil.move(os.path.join(tmp_dir, entry), os.path.join(dirpath, entry))
                 logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(extracted)))
                 _delete_rar_volumes(dirpath, fname)
             finally:
