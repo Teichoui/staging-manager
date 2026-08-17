@@ -752,8 +752,15 @@ def run_torrent_sync():
                 # rclone can't apply --exclude filters to a copyto, so honor the
                 # configured skip rules ourselves: a single file that itself matches
                 # an exclude pattern (e.g. a lone .rar) should never be transferred.
-                if not is_multi_file and name_matches_excludes(t['name'], cfg.get('rclone_excludes', [])):
-                    logger.info('torrent sync: skipping excluded single file: %s', t['name'])
+                # A standalone single-file RAR (no wrapping directory) is also always
+                # skipped, regardless of rclone_excludes - extract_rar_archives() only
+                # handles archives found inside a multi-file torrent's own directory,
+                # so copying a lone .rar here would just re-copy the same dead file
+                # every cycle forever (has_video() can never see a real video in it).
+                if not is_multi_file and (
+                        name_matches_excludes(t['name'], cfg.get('rclone_excludes', []))
+                        or re.search(r'\.(rar|r\d{2,3})$', t['name'], re.IGNORECASE)):
+                    logger.info('torrent sync: skipping excluded/unsupported single file: %s', t['name'])
                     continue
                 copy_verb = 'copy' if is_multi_file else 'copyto'
                 cmd = [RCLONE_BIN, copy_verb, sftp_src, local_path,
@@ -795,9 +802,15 @@ def run_torrent_sync():
                         # The seedbox no longer unpacks releases itself - a
                         # tv/movies release that arrived still rarred needs
                         # extracting before has_video() can see the real files.
+                        # Gate completeness on extraction actually succeeding -
+                        # otherwise a still-packed release with a stray sample
+                        # video sitting next to the failed archive could get
+                        # marked synced/imported on that sample alone.
+                        extraction_ok = True
                         if category in ('tv', 'movies') and os.path.isdir(local_path):
-                            extract_rar_archives(local_path)
-                        is_complete = has_book(local_path) if category == 'bookshelf' else has_video(local_path)
+                            extraction_ok = extract_rar_archives(local_path)
+                        is_complete = extraction_ok and (
+                            has_book(local_path) if category == 'bookshelf' else has_video(local_path))
                         if is_complete:
                             import_attempts = 1 if category in ('tv', 'movies') else 0
                             import_last_attempt = (
@@ -1217,10 +1230,14 @@ def extract_rar_archives(root):
     """Extract every RAR archive found under root (a staging item's folder)
     in place with unar, then delete the consumed volumes - the seedbox no
     longer unpacks releases itself, so a rar-only release lands here still
-    packed and needs extracting before has_video() can see the real files."""
+    packed and needs extracting before has_video() can see the real files.
+    Returns False if any archive found wasn't cleanly extracted, so the
+    caller can hold off treating the item as complete rather than risk
+    importing a stray sample video sitting next to a still-packed release."""
     if not shutil.which('unar'):
         logger.warning('extract_rar_archives: unar not installed - leaving %s packed', root)
-        return
+        return False
+    all_ok = True
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
             if not fname.lower().endswith('.rar'):
@@ -1230,9 +1247,17 @@ def extract_rar_archives(root):
             rar_path = os.path.join(dirpath, fname)
             logger.info('extract_rar_archives: extracting %s', rar_path)
             before = set(os.listdir(dirpath))
-            result = subprocess.run(
-                ['unar', '-force-overwrite', '-no-directory', '-output-directory', dirpath, rar_path],
-                capture_output=True, text=True, timeout=1800)  # nosec B603
+            try:
+                result = subprocess.run(
+                    ['unar', '-force-overwrite', '-no-directory', '-output-directory', dirpath, rar_path],
+                    capture_output=True, text=True, timeout=1800)  # nosec B603
+            except (subprocess.TimeoutExpired, OSError) as e:
+                # Leave the volumes in place and keep going - one bad archive
+                # (or a slow extraction that hits the timeout) shouldn't abort
+                # the whole sync cycle for every other torrent.
+                logger.warning('extract_rar_archives: failed to run unar on %s: %s', rar_path, e)
+                all_ok = False
+                continue
             # unar's exit code can't be trusted on its own - confirmed it still
             # returns 0 for "Couldn't recognize the archive format." on a
             # bad/corrupt file. Require both a clean exit code AND at least
@@ -1246,9 +1271,11 @@ def extract_rar_archives(root):
                 logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, new_files=%s): %s',
                                 rar_path, result.returncode, bool(new_files),
                                 (result.stderr or result.stdout)[-500:])
+                all_ok = False
                 continue
             logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(new_files)))
             _delete_rar_volumes(dirpath, fname)
+    return all_ok
 
 def validate_path_component(name):
     """Reject anything that could escape the intended directory when looking
