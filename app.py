@@ -1310,13 +1310,26 @@ def extract_rar_archives(root):
                 # 1/episode.mkv) for a release directory that already has a
                 # same-named subfolder from a prior partial extraction.
                 extracted = []
-                for tdirpath, _, tfilenames in os.walk(tmp_dir):
-                    rel = os.path.relpath(tdirpath, tmp_dir)
-                    dest_dir = dirpath if rel == '.' else os.path.join(dirpath, rel)
-                    os.makedirs(dest_dir, exist_ok=True)
-                    for tf in tfilenames:
-                        shutil.move(os.path.join(tdirpath, tf), os.path.join(dest_dir, tf))
-                        extracted.append(tf if rel == '.' else os.path.join(rel, tf))
+                try:
+                    for tdirpath, _, tfilenames in os.walk(tmp_dir):
+                        rel = os.path.relpath(tdirpath, tmp_dir)
+                        dest_dir = dirpath if rel == '.' else os.path.join(dirpath, rel)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        for tf in tfilenames:
+                            shutil.move(os.path.join(tdirpath, tf), os.path.join(dest_dir, tf))
+                            extracted.append(tf if rel == '.' else os.path.join(rel, tf))
+                except OSError as e:
+                    # A permissions/disk-full/filesystem error partway through
+                    # promotion shouldn't propagate out of here - that would
+                    # abort run_torrent_sync's per-torrent loop and stop every
+                    # later torrent in this cycle from being processed, not
+                    # just this one. Leave the rar volumes in place (whatever
+                    # was already moved stays moved - _delete_rar_volumes only
+                    # touches the source .rar/.rNN files) and retry next cycle.
+                    logger.warning('extract_rar_archives: failed to promote extracted files for %s: %s',
+                                    rar_path, e)
+                    all_ok = False
+                    continue
                 logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(extracted)))
                 _delete_rar_volumes(dirpath, fname)
             finally:
