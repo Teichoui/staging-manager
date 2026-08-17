@@ -395,7 +395,7 @@ main { flex:1; padding:2rem; overflow-y:auto; }
       <div class="field"><label>Movies Path on Seedbox</label><input type="text" id="seedbox_movies_path" placeholder="/downloads/Done3/radarr" /></div>
       <div class="field"><label>Bookshelf Path on Seedbox</label><input type="text" id="seedbox_bookshelf_path" placeholder="/downloads/Done3/bookshelf" /></div>
       <div class="field"><label>rclone Transfers</label><input type="number" id="rclone_transfers" min="1" max="32" /></div>
-      <div class="field"><label>rclone Excludes <span style="color:var(--muted)">(one per line)</span></label><textarea id="rclone_excludes" placeholder="**/*.rar&#10;**/*.r[0-9][0-9]"></textarea></div>
+      <div class="field"><label>rclone Excludes <span style="color:var(--muted)">(one per line - don't add RAR patterns, tv/movies releases are extracted locally instead of skipped)</span></label><textarea id="rclone_excludes" placeholder="**/*.iso&#10;**/*.sample.*"></textarea></div>
     </div>
 
     <div class="settings-section">
