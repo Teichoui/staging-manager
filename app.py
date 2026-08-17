@@ -1224,9 +1224,15 @@ def _delete_rar_volumes(dirpath, first_volume_name):
         pattern = re.compile(re.escape(m.group(1)) + r'\.part\d+\.rar$', re.IGNORECASE)
     else:
         prefix = first_volume_name[:-len('.rar')]
-        # Old-style numbering rolls past .r99 into .s00, .t00, ... for sets
-        # with more than 100 volumes, rather than continuing r100/r101.
-        pattern = re.compile(re.escape(prefix) + r'\.(rar|[a-z]\d{2,3})$', re.IGNORECASE)
+        # Old-style numbering technically rolls past .r99 into .s00, .t00,
+        # ... for sets with more than 100 volumes, but ".s00"/".t00"-shaped
+        # extensions are structurally indistinguishable from a real codec/
+        # quality tag (".x264", ".h265", ".a01") with no way to tell them
+        # apart from the filename alone - matching that broadly risks
+        # deleting an unrelated real file, which is worse than leaving a
+        # few stray volumes behind for an edge case (>100 old-style
+        # volumes) that essentially never occurs for actual video releases.
+        pattern = re.compile(re.escape(prefix) + r'\.(rar|r\d{2,3})$', re.IGNORECASE)
     for fname in os.listdir(dirpath):
         if pattern.match(fname):
             try:
@@ -1295,9 +1301,22 @@ def extract_rar_archives(root):
                                     (result.stderr or result.stdout)[-500:])
                     all_ok = False
                     continue
-                extracted = os.listdir(tmp_dir)
-                for entry in extracted:
-                    shutil.move(os.path.join(tmp_dir, entry), os.path.join(dirpath, entry))
+                # Move file-by-file (creating the matching relative subdirs
+                # under dirpath as needed) instead of moving each top-level
+                # tmp_dir entry wholesale - shutil.move() nests a source
+                # directory *inside* an already-existing same-named
+                # destination directory rather than merging into it, which
+                # would silently double the nesting (dirpath/Season 1/Season
+                # 1/episode.mkv) for a release directory that already has a
+                # same-named subfolder from a prior partial extraction.
+                extracted = []
+                for tdirpath, _, tfilenames in os.walk(tmp_dir):
+                    rel = os.path.relpath(tdirpath, tmp_dir)
+                    dest_dir = dirpath if rel == '.' else os.path.join(dirpath, rel)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    for tf in tfilenames:
+                        shutil.move(os.path.join(tdirpath, tf), os.path.join(dest_dir, tf))
+                        extracted.append(tf if rel == '.' else os.path.join(rel, tf))
                 logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(extracted)))
                 _delete_rar_volumes(dirpath, fname)
             finally:
