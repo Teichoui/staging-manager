@@ -113,7 +113,7 @@ DEFAULT_CONFIG = {
     "tv_label": "sonarr",
     "movies_label": "radarr",
     "bookshelf_label": "readarr",
-    "rclone_excludes": ["*.rar", "*.r[0-9][0-9]"],
+    "rclone_excludes": [],
     "ignore_torrents": [],
     "rclone_transfers": 8,
     "sonarr_url": "http://host.docker.internal:30113",
@@ -1233,15 +1233,19 @@ def extract_rar_archives(root):
             result = subprocess.run(
                 ['unar', '-force-overwrite', '-no-directory', '-output-directory', dirpath, rar_path],
                 capture_output=True, text=True, timeout=1800)  # nosec B603
-            # unar's exit code can't be trusted - confirmed it still returns 0
-            # for "Couldn't recognize the archive format." on a bad/corrupt
-            # file. Only treat it as a success (and only then delete the
-            # source volumes) if it actually produced new output, since a
-            # false positive here would delete the only copy of the release.
-            new_files = set(os.listdir(dirpath)) - before
-            if not new_files:
-                logger.warning('extract_rar_archives: no output produced for %s (rc=%s): %s',
-                                rar_path, result.returncode, (result.stderr or result.stdout)[-500:])
+            # unar's exit code can't be trusted on its own - confirmed it still
+            # returns 0 for "Couldn't recognize the archive format." on a
+            # bad/corrupt file. Require both a clean exit code AND at least
+            # one new regular file on disk before treating this as a success
+            # and deleting the source volumes - a false positive on either
+            # signal alone would risk deleting the only copy of the release,
+            # or (exit-code-only) accepting a partial/corrupt extraction.
+            new_files = {f for f in set(os.listdir(dirpath)) - before
+                         if os.path.isfile(os.path.join(dirpath, f))}
+            if result.returncode != 0 or not new_files:
+                logger.warning('extract_rar_archives: extraction failed for %s (rc=%s, new_files=%s): %s',
+                                rar_path, result.returncode, bool(new_files),
+                                (result.stderr or result.stdout)[-500:])
                 continue
             logger.info('extract_rar_archives: extracted %s -> %s', rar_path, ', '.join(sorted(new_files)))
             _delete_rar_volumes(dirpath, fname)
