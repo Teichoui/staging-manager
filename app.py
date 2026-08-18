@@ -631,10 +631,10 @@ def connect_rtorrent(cfg):
 def query_rtorrent(cfg):
     client = connect_rtorrent(cfg)
     results = client.d.multicall2('', 'complete',
-        'd.hash=', 'd.name=', 'd.base_path=', 'd.complete=', 'd.custom1=', 'd.is_multi_file=')
+        'd.hash=', 'd.name=', 'd.base_path=', 'd.complete=', 'd.custom1=', 'd.is_multi_file=', 'd.size_bytes=')
     completed = []
     for torrent in results:
-        hash_, name, base_path, complete, label, is_multi_file = torrent
+        hash_, name, base_path, complete, label, is_multi_file, size_bytes = torrent
         if complete == 1:
             completed.append({
                 'hash': hash_,
@@ -642,8 +642,26 @@ def query_rtorrent(cfg):
                 'base_path': base_path,
                 'label': (label or '').lower(),
                 'is_multi_file': bool(is_multi_file),
+                'size_bytes': size_bytes,
             })
     return completed
+
+# The flat 3600s copy timeout wasn't enough for a full-season transfer even
+# though throughput observed elsewhere that same day was ~30MiB/s - seedbox
+# SFTP throughput clearly varies a lot run to run, so scale the timeout by
+# the torrent's actual size instead of assuming a fixed duration fits
+# everything. Floor matches the old flat behavior for typical small items;
+# ceiling keeps one unusually large/stuck transfer from blocking the sync
+# loop indefinitely.
+MIN_TRANSFER_TIMEOUT = 3600
+MAX_TRANSFER_TIMEOUT = 14400
+MIN_EXPECTED_TRANSFER_RATE_BYTES = 3 * 1024 * 1024  # 3 MiB/s conservative floor
+
+def _transfer_timeout_for_size(size_bytes):
+    if not size_bytes:
+        return MIN_TRANSFER_TIMEOUT
+    estimated = size_bytes / MIN_EXPECTED_TRANSFER_RATE_BYTES + 600
+    return int(max(MIN_TRANSFER_TIMEOUT, min(MAX_TRANSFER_TIMEOUT, estimated)))
 
 AUDIOBOOK_NAME_MARKERS = re.compile(
     r'\b(unabridged|abridged|audiobook|audio ?book)\b|\bbook\s*\d+\b', re.IGNORECASE)
@@ -789,8 +807,9 @@ def run_torrent_sync():
                     for pattern in cfg.get('rclone_excludes', []):
                         cmd.extend(['--exclude', pattern])
 
-                logger.info('torrent sync copying: name=%s → %s', t['name'], local_path)
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # nosec B603
+                copy_timeout = _transfer_timeout_for_size(t.get('size_bytes'))
+                logger.info('torrent sync copying: name=%s → %s (timeout=%ds)', t['name'], local_path, copy_timeout)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=copy_timeout)  # nosec B603
 
                 if result.returncode == 0:
                     # rclone exits 0 even when nothing was transferred (missing remote
